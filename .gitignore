@@ -1,0 +1,41 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv311/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output files
+output/
+*.csv
+*.xlsx
+
+# Backup and temporary files
+Backup Data/
+*.tmp
+*.bak
+*.log
+
+# Data directories (if you want to exclude sample data)
+CSVdata/
