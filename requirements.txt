@@ -1,8 +1,8 @@
-# Fischer Data Processing App - Required Python Packages
-
 pandas>=2.0.0
 openpyxl>=3.1.0
 streamlit>=1.28.0
 plotly>=5.17.0
 anthropic>=0.18.0
 python-dotenv>=1.0.0
+python-dateutil>=2.8.2
+tzdata>=2022.1

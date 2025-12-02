@@ -6,16 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Fischer Data App V1 is a Streamlit-based data processing application for combining building management system sensor data from multiple Excel/CSV files. The app performs time-series alignment, timestamp normalization, quarter-hour resampling, and data quality flagging.
 
-**LATEST (V7)**: Quarter-hour resampling with quality flags, building on V6's parallel AI analysis and timestamp normalization.
+**LATEST (V11)**: Fully automatic workflow with single-button processing, automatic file generation to archive folder, progress tracking for all phases, and streamlined 4-step process. No more AI Debug Panel.
 
 ## Common Commands
 
 ### Running the Application
 ```bash
-# Main application (latest version - V7 with quarter-hour resampling)
-streamlit run src/app_v7.py
+# Main application (latest version - V11 with automatic workflow)
+streamlit run src/app_v11.py
 
 # Alternative versions
+streamlit run src/app_v10.py      # Version 10 with tab-based UI and smart data types
+streamlit run src/app_v9.py       # Version 9 with multi-tab Excel and enhanced flagging
+streamlit run src/app_v7.py       # Version 7 with quarter-hour resampling
 streamlit run src/app_v6.py       # Version 6 with parallel AI and timestamp normalization
 streamlit run src/app_v5.py       # Version 5 with per-file AI detection
 streamlit run src/app_v4.py       # Version 4 with raw text preview
@@ -61,7 +64,92 @@ pip install -r requirements.txt
 ### UI Application Versions
 The project has evolved through multiple UI iterations in `src/`:
 
-- **`app_v7.py`** (CURRENT - RECOMMENDED):
+- **`app_v11.py`** (CURRENT - RECOMMENDED):
+  - **All V10 Features**: Tab-based UI, smart data types, enhanced flagging, multi-tab Excel, Fischer branding
+  - **Fully Automatic Workflow** (NEW):
+    - Single "Process All Files" button triggers entire pipeline
+    - Automatic: Combine → Save Raw CSV → Resample → Generate Excel
+    - All files automatically saved to archive folder
+    - No manual steps after clicking process button
+  - **Progress Tracking** (NEW):
+    - Real-time progress bar (0-100%) across all phases
+    - Phase weights: Combine (40%), Resample (40%), Export (20%)
+    - Status messages show current operation
+    - Progress callback updates every 100 rows during resampling
+  - **Automatic File Generation** (NEW):
+    - Raw CSV: `{Building}_raw_merged_{timestamp}.csv` → archive folder
+    - Excel: `{Building}_resampled_15min_{timestamp}.xlsx` → archive folder
+    - Files created without user intervention
+    - Sanitized building names for filenames
+  - **Streamlined 4-Step Process** (NEW):
+    - Step 1: Upload & Archive
+    - Step 2: AI Analysis
+    - Step 3: Review & Edit Configurations
+    - Step 4: Process & Export (automatic)
+  - **Removed AI Debug Panel**: Cleaner interface, no debug section
+  - **New Helper Functions**:
+    - `auto_process_and_export()`: 200+ line orchestration function
+    - `sanitize_building_name()`: Clean filenames from building names
+    - `validate_archive_path()`: Ensure archive directory exists and is writable
+  - **Download Interface** (NEW):
+    - Two download buttons appear after processing
+    - Shows file paths where files were saved
+    - Preview tabs: Resampled Data + Quality Statistics
+    - Reset button to process different files
+  - **One-Shot Processing**: No option to re-run individual steps after completion
+  - Uses `.env` file for CLAUDE_API_KEY
+
+- **`app_v10.py`**:
+  - **All V9 Features**: Multi-tab Excel, enhanced flagging, file archiving, Fischer branding
+  - **Tab-Based UI Redesign** (NEW):
+    - Two-level tab system: File-level tabs → Sheet-level tabs (for multi-tab Excel)
+    - Visual indicators on tabs: `✓ (count)`, `⚠️`, `❌`
+    - Replaces accordion interface (no more scrolling through 40 open sections)
+    - Better UX: Click tabs to configure each file/sheet
+  - **Smart Data Type Preservation** (NEW):
+    - Intelligent column type detection with 80% threshold
+    - Pure text columns ("off"/"on") preserved as text
+    - Mostly numeric columns (72.5, -, 73.1) converted to numeric
+    - SQL-ready output with proper data types (INTEGER, FLOAT, VARCHAR)
+    - Uses `dtype=str` + `keep_default_na=False` on all reads, then `smart_convert_column()`
+  - **Improved Quality Flagging** (NEW):
+    - Stale data detection: Only checks numeric columns (skips text fields)
+    - Zero value detection: Only checks numeric columns
+    - Prevents false positives on text fields like fan status
+  - **Helper Functions Added**:
+    - `build_tab_label()`: Dynamic tab label generation with visual indicators
+    - `smart_convert_column()`: Intelligent type conversion (text vs numeric)
+    - `render_sheet_config_ui()`: Excel sheet configuration UI
+    - `render_csv_config_ui()`: CSV/single-tab file configuration UI
+  - **6-Step Workflow**: Upload & Archive → AI Analysis → Review (Tabs!) → Combine → Resample → Export
+  - Uses `.env` file for CLAUDE_API_KEY
+
+- **`app_v9.py`**:
+  - **All V7 Features**: Quarter-hour resampling, quality flags, two-stage export, parallel AI
+  - **Multi-Tab Excel Support**: Process Excel files with multiple worksheets
+    - AI-powered tab detection and column identification
+    - Dynamic column naming: `[TabName] [ColumnName]`
+    - Per-tab column selection UI
+    - Preserves percentage formatting where possible
+  - **Enhanced Quality Flags**:
+    - `Stale_Data_Flag`: Modified to detect 3+ consecutive non-zero identical values (changed from 4+ in V7)
+    - `Stale_Sensors`: Comma-separated list of sensors with stale readings
+    - `Zero_Value_Flag`: New column with values "Clear", "Single", "Repeated" for zero tracking
+  - **File Archiving System**:
+    - Building Name input field for organization
+    - Default archive structure: `archive/[Building Name]/`
+    - Optional custom archive location via UI checkbox
+    - Automatic copying of original files before processing
+  - **Fischer Energy Branding**:
+    - Custom logo in top-left (fischer background clear)
+    - Teal color scheme (#24b3aa primary)
+    - Custom CSS injection for buttons and headers
+    - Configured via `.streamlit/config.toml`
+  - **Improved Column Ordering**: Date, Stale_Data_Flag, Stale_Sensors, Zero_Value_Flag, then all sensors
+  - **6-Step Workflow**: Upload & Archive → AI Analysis → Review → Combine → Resample → Export
+  - Uses `.env` file for CLAUDE_API_KEY
+
+- **`app_v7.py`**:
   - **All V6 Features**: Parallel AI processing, timestamp normalization, simplified configuration
   - **Two-Stage Export**: Raw merged CSV download + resampled CSV export
   - **Quarter-Hour Resampling**: Automatic resampling to 15-minute intervals (:00, :15, :30, :45)
@@ -91,7 +179,15 @@ The project has evolved through multiple UI iterations in `src/`:
 
 ### Data Processing Pipeline
 
-**V7 (Current):**
+**V9 (Current):**
+```
+Raw Files → File Type Detection (CSV/Single-Tab/Multi-Tab) → AI Analysis (parallel) →
+User Review/Edit → [Multi-Tab: Column Selection] → Archive Original Files →
+Combine (timestamp normalization) → [Optional: Download Raw Merged CSV] →
+Resample to 15-min → Enhanced Quality Flagging (Stale + Zero) → Column Reordering → Export CSV
+```
+
+**V7:**
 ```
 Raw Files → AI Analysis (parallel) → User Review/Edit → Combine (timestamp normalization) →
 [Optional: Download Raw Merged CSV] → Resample to 15-min → Quality Flagging → Export Resampled CSV
@@ -113,10 +209,15 @@ Key implementation details:
 ### Session State Management
 Streamlit apps use session state to maintain:
 - `uploaded_files`: Dictionary of file names to file paths
-- `file_configs`: Dictionary of file configurations (start_row, delimiter, date_column, value_column, sensor_name)
+- `file_configs`: Dictionary of file configurations
+  - **V9 CSV/Single-Tab**: `{'file_type': 'csv', 'config': {start_row, delimiter, date_column, value_column, sensor_name}}`
+  - **V9 Multi-Tab**: `{'file_type': 'excel_multi_tab', 'tabs': {tab_name: {start_row, date_column, selected_columns, ...}}}`
 - `combined_df`: Raw merged DataFrame (all sensors combined)
-- `resampled_df`: 15-minute resampled DataFrame with quality flags (V7 only)
-- `resampling_stats`: Dictionary with resampling metrics (V7 only)
+- `resampled_df`: 15-minute resampled DataFrame with quality flags (V7+)
+- `resampling_stats`: Dictionary with resampling metrics (V7+)
+- `building_name`: Building name for archiving (V9 only)
+- `archive_path`: Archive folder path (V9 only)
+- `use_custom_archive`: Boolean for custom archive location (V9 only)
 - `ai_debug_log`: List of AI API call details (V6+)
 - `ai_analysis_complete`: Boolean flag for batch analysis status (V6+)
 
@@ -131,9 +232,19 @@ Excel/CSV files in `CSVdata/` with varying structures:
 
 ### Output Format
 CSV files in `output/` containing:
-- Date column (standardized to MM/DD/YYYY HH:MM:SS)
-- Multiple sensor value columns (one per input file)
+
+**V9 Structure:**
+- `Date` column (standardized to MM/DD/YYYY HH:MM:SS)
+- `Stale_Data_Flag` (Boolean: TRUE/FALSE)
+- `Stale_Sensors` (Text: comma-separated list or blank)
+- `Zero_Value_Flag` (Text: "Clear", "Single", or "Repeated")
+- Multiple sensor value columns (alphabetically sorted)
 - All timestamps aligned on Date
+- Quarter-hour intervals (:00, :15, :30, :45)
+
+**Earlier Versions:**
+- Date + sensor columns only (V6 and earlier)
+- Date + Inexact_Match_Flag + per-sensor stale flags + sensors (V7)
 
 ### Key Code Patterns
 
@@ -301,16 +412,344 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2):
 - Outer merge naturally handles overlapping timestamps (creates single row with all sensor data)
 - No additional deduplication needed for quarter-hour intervals
 
+## V9 Enhanced Features
+
+### Multi-Tab Excel File Support (V9)
+
+V9 adds comprehensive support for Excel files with multiple worksheet tabs:
+
+**File Type Detection:**
+```python
+def detect_file_type(file_path):
+    """Returns: Tuple of (file_type, sheet_names)"""
+    if file_path.endswith(('.xlsx', '.xls')):
+        xl_file = pd.ExcelFile(file_path)
+        if len(xl_file.sheet_names) > 1:
+            return 'excel_multi_tab', xl_file.sheet_names
+        else:
+            return 'excel_single_tab', xl_file.sheet_names
+    else:
+        return 'csv', None
+```
+
+**Multi-Tab AI Analysis:**
+- AI analyzes first 15 lines of each tab separately
+- Detects column structure per tab
+- Identifies multiple value columns per tab
+- Returns nested JSON structure:
+
+```json
+{
+  "tabs": [
+    {
+      "tab_name": "AC12-1",
+      "start_row": 1,
+      "date_column": 0,
+      "value_columns": [2, 3, 4],
+      "column_names": ["Return Air Temp", "Supply Air Temp", "Fan Status"]
+    },
+    {
+      "tab_name": "AC12-2",
+      "start_row": 1,
+      "date_column": 0,
+      "value_columns": [2, 3],
+      "column_names": ["Return Air Temp", "Supply Air Temp"]
+    }
+  ]
+}
+```
+
+**Column Selection UI:**
+- Per-tab expandable sections in Step 3
+- Checkboxes for each detected value column
+- User can include/exclude columns as needed
+- Date column selector per tab
+
+**Dynamic Column Naming:**
+- Format: `[Tab Name] [Column Name]`
+- Examples:
+  - `AC12-1 Return Air Temp`
+  - `AC12-1 Supply Air Temp`
+  - `AC12-2 Return Air Temp`
+- Ensures uniqueness across tabs
+
+**Data Extraction:**
+```python
+def extract_multi_tab_data(file_path, file_config):
+    """Extract data from multi-tab Excel file."""
+    all_dataframes = []
+
+    for tab_name, tab_config in file_config['tabs'].items():
+        df = pd.read_excel(file_path, sheet_name=tab_name,
+                          header=tab_config['start_row'])
+
+        for col_idx in tab_config['selected_columns']:
+            final_name = f"{tab_name} {column_name}"
+            mini_df = pd.DataFrame({
+                'Date': date_series,
+                final_name: df.iloc[:, col_idx]
+            })
+            all_dataframes.append(mini_df)
+
+    return all_dataframes
+```
+
+**Config Structure:**
+- CSV/Single-Tab: `{'file_type': 'csv', 'config': {...}}`
+- Multi-Tab: `{'file_type': 'excel_multi_tab', 'tabs': {...}}`
+
+### Enhanced Quality Flagging (V9)
+
+V9 modifies stale flag logic and adds zero value tracking:
+
+#### **Stale Data Flag (Modified in V9)**
+
+**V9 Logic (3+ consecutive non-zero):**
+```python
+# Changed from 4+ consecutive to 3+ consecutive
+# Now only flags non-zero values (zeros handled separately)
+
+stale_per_sensor = {}
+for sensor in sensor_cols:
+    # Skip if value is zero or NaN
+    is_non_zero = (resampled[sensor] != 0) & (resampled[sensor].notna())
+
+    # Check if current equals previous 2 values (3 consecutive identical non-zero)
+    is_stale = (
+        is_non_zero &
+        (resampled[sensor] == resampled[sensor].shift(1)) &
+        (resampled[sensor] == resampled[sensor].shift(2))
+    )
+    stale_per_sensor[sensor] = is_stale
+```
+
+**Output Columns:**
+- `Stale_Data_Flag` (Boolean): TRUE if any sensor has stale data on this row
+- `Stale_Sensors` (Text): Comma-separated list of sensor names with stale readings
+
+**Example:**
+```csv
+Date,Stale_Data_Flag,Stale_Sensors,Sensor A,Sensor B,Sensor C
+01/15/2024 00:00:00,FALSE,,72.5,55.3,45.8
+01/15/2024 00:15:00,FALSE,,72.5,55.3,45.8
+01/15/2024 00:30:00,TRUE,"Sensor A, Sensor B",72.5,55.3,46.2
+```
+
+#### **Zero Value Flag (New in V9)**
+
+Tracks zero readings across all sensors with three states:
+
+**Flag Values:**
+- `"Clear"`: No zero values detected in any sensor
+- `"Single"`: One or more sensors have isolated zero(s)
+- `"Repeated"`: One or more sensors have 2+ consecutive zeros
+
+**V9 Logic:**
+```python
+def calculate_zero_flags(resampled_df, sensor_cols):
+    """Calculate Zero_Value_Flag for each row."""
+    zero_flags = []
+
+    for idx in range(len(resampled_df)):
+        row_flag = "Clear"
+
+        for sensor in sensor_cols:
+            val_current = resampled_df.loc[idx, sensor]
+
+            if pd.isna(val_current) or val_current != 0:
+                continue
+
+            # Current value is zero
+            if idx > 0:
+                val_prev = resampled_df.loc[idx-1, sensor]
+                if val_prev == 0:
+                    row_flag = "Repeated"  # Highest priority
+                    break
+                else:
+                    if row_flag == "Clear":
+                        row_flag = "Single"
+            else:
+                if row_flag == "Clear":
+                    row_flag = "Single"
+
+        zero_flags.append(row_flag)
+
+    return zero_flags
+```
+
+**Priority:** Repeated > Single > Clear
+
+**Example:**
+```csv
+Date,Zero_Value_Flag,Sensor A,Sensor B
+01/15/2024 00:00:00,Clear,72.5,55.3
+01/15/2024 00:15:00,Single,0,55.3
+01/15/2024 00:30:00,Repeated,0,55.3
+01/15/2024 00:45:00,Clear,72.5,55.3
+01/15/2024 01:00:00,Single,72.5,0
+```
+
+### File Archiving System (V9)
+
+V9 automatically archives all uploaded files before processing:
+
+**Archive Structure:**
+```
+archive/
+└── [Building Name]/
+    ├── sensor_file_1.csv
+    ├── sensor_file_2.xlsx
+    └── sensor_file_3.csv
+```
+
+**Key Features:**
+- Building Name input field (required)
+- Default path: `archive/[Building Name]/`
+- Optional custom location via UI checkbox
+- Uses `shutil.copy2()` to preserve file metadata
+- Archives created before any processing begins
+
+**Implementation:**
+```python
+def archive_uploaded_files(uploaded_files, archive_path):
+    """Copy original files to archive directory for safekeeping."""
+    archive_dir = Path(archive_path)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    archived_files = []
+    for file_name, file_path in uploaded_files.items():
+        dest_path = archive_dir / file_name
+        shutil.copy2(file_path, dest_path)
+        archived_files.append(str(dest_path))
+
+    return archived_files
+```
+
+**UI Options:**
+- **Default Mode**: Auto-generates path from building name
+- **Custom Mode**: Checkbox enables manual path entry
+  - Examples: `C:/MyFiles/Archive`, `D:/Backups/BuildingData`
+  - Full filesystem access for flexibility
+
+### Fischer Energy Branding (V9)
+
+**Color Scheme:**
+- Primary Teal: `#24b3aa`
+- Background White: `#FFFFFF`
+- Text Black: `#151515`
+- Secondary Gray: `#f0f2f6`
+
+**Theme Configuration (`.streamlit/config.toml`):**
+```toml
+[theme]
+primaryColor = "#24b3aa"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#151515"
+font = "sans serif"
+```
+
+**Custom CSS Injection:**
+```python
+def inject_custom_css():
+    """Inject custom CSS for Fischer Energy branding."""
+    st.markdown("""
+        <style>
+        .stButton > button {
+            background-color: #24b3aa;
+            color: #FFFFFF;
+        }
+        h1, h2, h3 {
+            color: #24b3aa;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+```
+
+**Logo Display:**
+```python
+def add_logo():
+    """Add Fischer Energy logo to top-left with title."""
+    logo_path = Path(__file__).parent.parent / "assets" / "fischer background clear (1).png"
+
+    if logo_path.exists():
+        with open(logo_path, "rb") as f:
+            logo_data = base64.b64encode(f.read()).decode()
+
+        st.markdown(
+            f'<img src="data:image/png;base64,{logo_data}" style="height: 80px;">',
+            unsafe_allow_html=True
+        )
+```
+
+**Assets Required:**
+- Logo file: `assets/fischer background clear (1).png`
+- Transparent PNG recommended for clean display
+
 ## Performance Considerations
 
 - Current: Handles ~12 files × 100 rows each efficiently
 - Target: Designed for 10-90 files × 100-600,000 rows each
 - Memory: ~54M rows fits in 2-4 GB RAM
 - All pandas operations use optimized C implementations
-- **V6 AI Analysis**: ~1-3 seconds per file, runs 5 files in parallel (ThreadPoolExecutor)
+- **V9 AI Analysis**: ~1-3 seconds per file, runs 5 files in parallel (ThreadPoolExecutor)
+  - Multi-tab files analyzed per-tab (slightly longer processing time)
 - **Timestamp Normalization**: Adds minimal overhead (~0.1ms per timestamp)
-- **V7 Resampling**: `merge_asof()` is O(n log n), efficient for large datasets
-- **V7 Flag Operations**: Vectorized pandas operations, very fast
+- **V9 Resampling**: `merge_asof()` is O(n log n), efficient for large datasets
+- **V9 Flag Operations**: Vectorized pandas operations, very fast
+  - Zero flag calculation: O(n) per sensor per row
+  - Stale flag calculation: Vectorized shift operations
+- **V9 File Archiving**: Uses `shutil.copy2()`, minimal overhead
+- **V9 Multi-Tab Extraction** (OPTIMIZED):
+  - Creates 1 DataFrame per tab (not per column) - 75% fewer DataFrames
+  - Uses `reduce()` for efficient merging
+  - Enhanced progress indicators for large datasets
+  - Typical performance: 8 files × 5 tabs × 4 columns = 40 DataFrames (was 160)
+
+## V9 Bug Fixes (Production Issues)
+
+### Bug Fix #1: Streamlit Deprecation Warnings (Fixed)
+**Issue**: `use_container_width` parameter deprecated in Streamlit 1.31+
+
+**Solution**: Removed all 12 instances of `use_container_width=True` from st.dataframe(), st.button(), and st.download_button() calls
+
+**Files Modified**: `src/app_v9.py` (lines 1145, 1250, 1284, 1379, 1389, 1450, 1557, 1591, 1594, 1612, 1649, 1682, 1704)
+
+### Bug Fix #2: PyArrow Serialization Errors (Fixed)
+**Issue**: `ArrowTypeError: Expected bytes, got 'int'/'float' object` when displaying DataFrames with mixed data types
+
+**Root Cause**: Multi-tab extraction created object columns with mixed int/float/None values, incompatible with PyArrow serialization
+
+**Solutions Implemented**:
+1. Added `pd.to_numeric(errors='coerce')` in `extract_multi_tab_data()` (line 857)
+2. Created `prepare_df_for_display()` helper function for type enforcement (lines 799-828)
+3. Wrapped 5 critical st.dataframe() calls with helper function
+
+**Files Modified**: `src/app_v9.py`
+
+### Bug Fix #3: Performance Hang with Large Multi-Tab Files (Fixed)
+**Issue**: App hung when combining 8 multi-tab Excel files with many rows
+
+**Root Cause**: Created 160+ separate DataFrames (one per column) with redundant timestamp normalization and iterative O(n²) merging
+
+**Solutions Implemented**:
+1. **Refactored `extract_multi_tab_data()`** (lines 831-881):
+   - Now creates 1 DataFrame per tab instead of per column
+   - Normalizes timestamps once per tab (not per column)
+   - Result: 75% fewer DataFrames (160 → 40 for typical workload)
+
+2. **Replaced iterative merge with `reduce()`** (lines 1565-1570):
+   - Cleaner code with same functionality
+   - Works with outer joins to preserve overlapping timestamps
+
+3. **Enhanced progress indicators** (lines 1486-1495, 1580-1582, 1605-1607):
+   - Shows current file being processed
+   - Displays progress counter (e.g., "Processing file.xlsx... (3/8)")
+   - Clears indicators after completion
+
+**Performance Improvement**: ~50-70% faster for large multi-tab datasets, significantly reduced memory usage
+
+**Files Modified**: `src/app_v9.py`
 
 ## Dependencies
 
@@ -329,18 +768,163 @@ tzdata>=2022.1          # Timezone database
 ## Documentation Files
 
 ### User Guides
-- **HOW_TO_RUN_V6.md**: Complete guide for running and using V6
+- **HOW_TO_RUN_V9.md**: Complete guide for running and using V9 (CURRENT)
+  - Multi-tab Excel workflow
+  - Enhanced quality flags (stale + zero)
+  - File archiving instructions
+  - Branding and UI features
 - **HOW_TO_USE.md**: General usage guide
 - **README.md**: Project overview
 
 ### Legacy Documentation
+- **HOW_TO_RUN_V6.md**: V6 guide (outdated, use V9)
 - **AI_INTEGRATION.md**: V5 AI features (outdated)
 - **DEBUG_WINDOW_GUIDE.md**: V5 debug window (outdated)
 - **HOW_TO_RUN.md**: V5 instructions (outdated)
 
-Note: V5-specific documentation is kept for reference but V6 has significantly improved architecture.
+Note: V5-V9 documentation is kept for reference but V10 has significantly improved features and architecture.
 
 ## Key Differences Between Versions
+
+### V10 → V11
+
+**New Features:**
+- **Fully Automatic Workflow**: Single button processes entire pipeline
+  - Combines all files with progress tracking (0-40%)
+  - Saves raw CSV to archive automatically (40%)
+  - Resamples to quarter-hour with progress updates (40-80%)
+  - Generates Excel with color coding automatically (80-100%)
+  - No manual steps between combine/resample/export
+- **Progress Tracking**: Real-time progress bar across all phases
+  - Phase-weighted progress calculation
+  - Progress callback in `resample_to_quarter_hour()` (updates every 100 rows)
+  - Status messages show current operation
+- **Automatic File Generation**: Files saved without user intervention
+  - Raw CSV: `{Building}_raw_merged_{YYYYMMDD_HHMMSS}.csv`
+  - Excel: `{Building}_resampled_15min_{YYYYMMDD_HHMMSS}.xlsx`
+  - Both files saved to archive folder automatically
+  - Filenames use sanitized building names
+- **Streamlined 4-Step Process**: Reduced from 6 steps to 4
+  - Removed: Manual "Combine" button (Step 4)
+  - Removed: Manual "Resample" button (Step 5)
+  - Removed: Manual "Export" button (Step 6)
+  - Added: Single automatic "Process All Files" button
+- **Removed AI Debug Panel**: 65 lines removed for cleaner interface
+- **New Helper Functions**:
+  - `auto_process_and_export()` - 200+ line orchestration function
+  - `sanitize_building_name()` - Clean special characters from building names
+  - `validate_archive_path()` - Validate and create archive directory
+
+**Workflow Changes:**
+- **V10**: Upload → AI → Review → Combine → [Download Raw] → Resample → Export (6 steps, 3 buttons)
+- **V11**: Upload → AI → Review → Process & Export (4 steps, 1 button)
+
+**File Output:**
+- **V10**: Manual download buttons, user chooses filenames, saves to local Downloads
+- **V11**: Automatic save to archive folder, timestamped filenames, download buttons for convenience
+
+**UI After Processing:**
+- **V10**: Shows preview, requires manual export steps
+- **V11**: Shows summary metrics, download buttons, preview tabs, reset button
+
+**Performance:**
+- **V11**: Slightly slower due to automatic Excel generation, but more efficient workflow
+- Progress tracking adds minimal overhead (<1% of total time)
+
+**One-Shot Processing:**
+- **V10**: Can re-run individual steps (combine, resample, export)
+- **V11**: One-shot workflow, must reset to process again
+
+**Config Structure:**
+- Same as V10 (no changes needed)
+
+### V9 → V10
+
+**New Features:**
+- **Tab-Based UI Redesign**: Replaces accordion interface with two-level tab system
+  - File-level tabs with visual indicators (`✓ (count)`, `⚠️`, `❌`)
+  - Sheet-level tabs for multi-tab Excel files (nested tabs)
+  - No more scrolling through 40 open sections
+  - Cleaner, more intuitive navigation
+- **Smart Data Type Preservation**: Intelligent column type detection for SQL-ready output
+  - 80% threshold algorithm: `smart_convert_column()`
+  - Pure text columns ("off"/"on") preserved as text
+  - Mostly numeric columns converted to numeric (dashes → NaN)
+  - Mixed columns (<80% numeric) preserved as text
+  - All reads use `dtype=str` + `keep_default_na=False`, then smart conversion
+- **Improved Quality Flagging**: Only checks numeric columns
+  - Stale data detection skips text fields (prevents false positives on fan status)
+  - Zero value detection skips text fields
+  - Uses `pd.api.types.is_numeric_dtype()` to identify column types
+- **New Helper Functions**:
+  - `build_tab_label()` - Dynamic tab labels with visual feedback
+  - `smart_convert_column()` - Intelligent type conversion
+  - `render_sheet_config_ui()` - Modular sheet configuration
+  - `render_csv_config_ui()` - Modular CSV configuration
+
+**UI Changes:**
+- **V9**: Accordion interface with `st.expander(expanded=True)` - all sections open
+- **V10**: Tab interface with `st.tabs()` - click to view each file/sheet
+
+**Data Type Handling:**
+- **V9**: `pd.to_numeric(errors='coerce')` on all columns - text lost
+- **V10**: `dtype=str` read → `smart_convert_column()` - text preserved, SQL-ready
+
+**Quality Flagging:**
+- **V9**: Checks all columns for staleness/zeros (includes text fields)
+- **V10**: Only checks numeric columns (skips text fields like "off"/"on")
+
+**Performance:**
+- **V10**: <1 second overhead for smart conversion
+- Fast-path optimization for pure text columns
+
+**Config Structure:**
+- Same as V9 (no changes needed)
+
+### V7 → V9
+
+**New Features:**
+- **Multi-Tab Excel Support**: Process Excel files with multiple worksheets
+  - AI-powered tab detection and column identification
+  - Dynamic column naming (`[TabName] [ColumnName]`)
+  - Per-tab column selection UI with checkboxes
+  - Preserves percentage formatting where possible
+- **Enhanced Quality Flags**:
+  - Modified stale flag: Now detects 3+ consecutive non-zero values (changed from 4+)
+  - Stale flag only checks non-zero values (zeros tracked separately)
+  - New `Zero_Value_Flag` column with values: "Clear", "Single", "Repeated"
+  - `Stale_Sensors` column: Comma-separated list of problematic sensors
+- **File Archiving System**:
+  - Building Name input field for organization
+  - Default archive: `archive/[Building Name]/`
+  - Optional custom archive location via UI checkbox
+  - Automatic file backup before processing
+- **Fischer Energy Branding**:
+  - Custom logo display (fischer background clear)
+  - Teal color scheme (#24b3aa)
+  - Custom CSS for buttons and headers
+  - Theme configured via `.streamlit/config.toml`
+- **Improved Column Ordering**: Date, Stale_Data_Flag, Stale_Sensors, Zero_Value_Flag, then sensors
+
+**Workflow Changes:**
+- **V7**: Upload → AI → Review → Combine → [Download Raw] → Resample → Export (6 steps)
+- **V9**: Upload & Archive → AI → Review [+ Multi-Tab Selection] → Combine → [Download Raw] → Resample → Export (6 steps)
+
+**Output Changes:**
+- **V7**: Date, Inexact_Match_Flag, per-sensor stale flags, then sensors
+- **V9**: Date, Stale_Data_Flag, Stale_Sensors, Zero_Value_Flag, then sensors (simplified, consolidated flags)
+
+**Algorithm Changes:**
+- Stale flag: 3+ consecutive (was 4+), non-zero only (was all values)
+- Zero flag: New per-row tracking with priority logic
+- Multi-tab data extraction with column selection
+- Column reordering at end of resampling
+
+**Config Structure:**
+- **V7**: Flat config dictionary per file
+- **V9**: Nested structure with file type detection
+  - CSV/Single-Tab: `{'file_type': 'csv', 'config': {...}}`
+  - Multi-Tab: `{'file_type': 'excel_multi_tab', 'tabs': {...}}`
 
 ### V6 → V7
 
@@ -392,41 +976,72 @@ Note: V5-specific documentation is kept for reference but V6 has significantly i
 
 ## Best Practices
 
-1. **Always use V7** for new work to get quarter-hour resampling and quality flags
+1. **Always use V11** for new work to get automatic workflow, progress tracking, and streamlined 4-step process
 2. **Set CLAUDE_API_KEY** in `.env` file before running
-3. **Use "Analyze All Files"** button to process all files in parallel
-4. **Review extracted previews** to verify correct column detection
-5. **Check timestamp conversion** examples before combining
-6. **Download raw merged CSV** if you need minute-level data preservation
-7. **Review resampling statistics** before exporting to understand data quality
-8. **Use quality flags** to identify problematic data points:
-   - Filter on `Inexact_Match_Flag=False` for exact 15-min timestamps only
-   - Check `{Sensor}_Stale_Flag` columns to find stuck sensors
-9. **Use debug panel** to troubleshoot AI detection issues
-10. **Keep sensor names unique** across files for clear column identification
+3. **Enter building name** for proper file archiving and automatic filename generation
+4. **Use "Analyze All Files"** button to process all files in parallel
+5. **Review extracted previews** to verify correct column detection
+6. **Use tab interface** in Step 3 to navigate between files and sheets efficiently
+7. **Select columns carefully** in multi-tab Excel files using checkboxes in each sheet tab
+8. **Check timestamp conversion** examples before processing
+9. **Click "Process All Files"** and watch the progress bar - the entire workflow is automatic
+10. **Files are automatically saved** to the archive folder with timestamped filenames
+11. **Use download buttons** after processing to get copies of the generated files
+12. **Review quality statistics** in the preview tabs to understand data quality
+13. **Use quality flags** to identify problematic data points:
+    - Filter on `Stale_Data_Flag=False` for clean data (only checks numeric columns)
+    - Check `Stale_Sensors` to identify stuck numeric sensors
+    - Filter on `Zero_Value_Flag='Clear'` to exclude zero readings
+    - Note: Text fields like "off"/"on" are automatically excluded from quality checks
+14. **Verify data types** in output files - text columns preserved, numeric columns converted
+15. **Keep sensor names unique** across files for clear column identification
+16. **Check archive folder** for output files - they're saved with timestamps for easy tracking
+17. **Use "Process Different Files"** button to reset and process a new batch
 
 ## Troubleshooting
 
 ### Import Errors
 If you see `ModuleNotFoundError: No module named 'src'`:
 - The app uses relative imports from the same directory
-- Run from project root: `streamlit run src/app_v6.py`
+- Run from project root: `streamlit run src/app_v11.py`
 
 ### Timestamp Parsing Issues
 If timestamps fail to normalize:
-- Check the debug panel for error messages
 - Verify input format is supported (see timestamp_normalizer.py)
 - Falls back to pandas parsing if custom normalization fails
+- Check error messages in the UI after clicking "Process All Files"
 
 ### AI Detection Failures
 If AI doesn't detect columns correctly:
-- Check debug panel for raw AI response
 - Verify file has at least 15 lines of data
 - Manually adjust settings in Step 3 (all inputs are editable)
 - Check API key is valid and has Sonnet 4.5 access
 
+### Data Type Issues (V10+)
+If text values like "off"/"on" appear as NaN or numbers in output:
+- Verify you're using V11 (check page title shows "V11")
+- Check if column meets 80% threshold for numeric detection
+- Mixed columns with <80% numeric values are preserved as text
+- If needed, adjust threshold in `smart_convert_column()` function
+
+### Stale Data False Positives (V10+)
+If text fields are flagged as stale:
+- V11 automatically skips text columns in quality checks
+- Only numeric columns are checked for staleness
+- Verify column type is detected correctly (should show as object/string for text)
+
+### Processing Errors (V11)
+If automatic processing fails:
+- Check error message displayed in red
+- Verify archive path exists and is writable
+- Ensure sufficient disk space for output files
+- Check that building name contains valid characters
+- Review partial results in error message (may include which phase failed)
+
 ### Performance Issues
 If processing is slow:
-- V6 uses 5 parallel workers by default (adjustable in code)
+- V11: Progress tracking adds <1% overhead
+- Automatic Excel generation takes most time (normal)
+- V6+ uses 5 parallel workers by default (adjustable in code)
 - Large files (>100k rows) may take time to load
 - Timestamp normalization is fast but processes every row

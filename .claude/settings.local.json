@@ -9,7 +9,8 @@
       "Bash(\".venv/Scripts/python.exe\" -m py_compile:*)",
       "Bash(.venv/Scripts/python.exe:*)",
       "Bash(powershell -Command:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(copy:*)"
     ],
     "deny": [],
     "ask": []
