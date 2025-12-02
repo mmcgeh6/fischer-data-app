@@ -13,6 +13,11 @@ This is a Streamlit-based web application for processing building management sys
 - Set up CLAUDE_API_KEY secret for AI-powered file analysis
 - Configured deployment settings for autoscale deployment
 - Created workflow to run the Streamlit application
+- **Optimized resampling algorithm** - Replaced O(n*m) loop with O(n log n) merge_asof approach
+  - Uses pd.merge_asof for memory-efficient per-sensor nearest-value matching
+  - Vectorized forward/backward selection logic
+  - Added error handling for MemoryError and RuntimeError
+  - Prevents silent crashes on large datasets within Replit's memory limits
 
 ## Project Architecture
 
