@@ -720,7 +720,10 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
     """
     Resample combined data to 15-minute intervals with PER-SENSOR nearest-value matching.
 
-    V9 Features:
+    V11 Optimized: Uses pd.merge_asof for O(n log n) performance instead of O(n*m).
+    This version is memory-efficient and works within Replit's resource limits.
+
+    V9 Features (preserved):
     - Modified stale flag: 3+ consecutive non-zero identical values (changed from 4+)
     - New Zero_Value_Flag: Clear/Single/Repeated per-sensor tracking
     - Each sensor independently finds its closest value within ±2 minutes
@@ -730,6 +733,7 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
     Args:
         combined_df: The merged dataframe with all sensors
         tolerance_minutes: Window for finding nearest match (±2 minutes default)
+        progress_callback: Optional callback for progress updates
 
     Returns:
         Tuple of (resampled_df, stats_dict, inexact_cells_dict)
@@ -737,77 +741,157 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
     if combined_df is None or combined_df.empty:
         return None, {}, {}
 
-    # Create complete range of 15-minute timestamps
-    start_time = combined_df['Date'].min()
-    end_time = combined_df['Date'].max()
+    try:
+        # Create complete range of 15-minute timestamps
+        start_time = combined_df['Date'].min()
+        end_time = combined_df['Date'].max()
 
-    # Round start to previous 15-min mark
-    start_time = start_time.replace(minute=(start_time.minute // 15) * 15, second=0, microsecond=0)
+        # Round start to previous 15-min mark
+        start_time = start_time.replace(minute=(start_time.minute // 15) * 15, second=0, microsecond=0)
 
-    # Round end to next 15-min mark
-    end_minute = ((end_time.minute // 15) + 1) * 15
-    if end_minute >= 60:
-        end_time = end_time + timedelta(hours=1)
-        end_time = end_time.replace(minute=0, second=0, microsecond=0)
-    else:
-        end_time = end_time.replace(minute=end_minute, second=0, microsecond=0)
+        # Round end to next 15-min mark
+        end_minute = ((end_time.minute // 15) + 1) * 15
+        if end_minute >= 60:
+            end_time = end_time + timedelta(hours=1)
+            end_time = end_time.replace(minute=0, second=0, microsecond=0)
+        else:
+            end_time = end_time.replace(minute=end_minute, second=0, microsecond=0)
 
-    # Generate 15-minute interval timestamps
-    target_timestamps = pd.date_range(start=start_time, end=end_time, freq='15min')
+        # Generate 15-minute interval timestamps
+        target_timestamps = pd.date_range(start=start_time, end=end_time, freq='15min')
 
-    # Get sensor columns (exclude Date)
-    sensor_cols = [col for col in combined_df.columns if col != 'Date']
+        # Get sensor columns (exclude Date)
+        sensor_cols = [col for col in combined_df.columns if col != 'Date']
 
-    # Initialize result lists and inexact cell tracking
-    result_data = {'Date': target_timestamps}
-    for sensor in sensor_cols:
-        result_data[sensor] = []
+        # Log data size for debugging
+        num_intervals = len(target_timestamps)
+        num_sensors = len(sensor_cols)
+        num_rows = len(combined_df)
 
-    inexact_cells = {}  # {row_idx: {sensor: True/False}}
-    tolerance = pd.Timedelta(minutes=tolerance_minutes)
-    total_inexact = 0
+        if progress_callback:
+            progress_callback(0, num_sensors,
+                f"Preparing resampling: {num_intervals} intervals, {num_sensors} sensors, {num_rows} source rows")
 
-    # For each target timestamp, find nearest value for each sensor independently
-    for row_idx, target_time in enumerate(target_timestamps):
-        inexact_cells[row_idx] = {}
+        # Create target DataFrame with just dates
+        target_df = pd.DataFrame({'Date': target_timestamps})
 
-        # Progress callback every 100 rows (avoid UI slowdown)
-        if progress_callback and row_idx % 100 == 0:
-            progress_callback(row_idx, len(target_timestamps),
-                             f"Resampling interval {row_idx}/{len(target_timestamps)}")
+        # Sort combined_df by Date once (required for merge_asof)
+        combined_sorted = combined_df.sort_values('Date').reset_index(drop=True)
 
-        # Calculate time differences for all rows
-        time_diffs = (combined_df['Date'] - target_time).abs()
-        within_window = time_diffs <= tolerance
+        # Tolerance for merge_asof
+        tolerance = pd.Timedelta(minutes=tolerance_minutes)
 
-        # For each sensor, find its nearest value
-        for sensor in sensor_cols:
-            # Filter to rows within tolerance that have a non-null value for this sensor
-            valid_mask = within_window & combined_df[sensor].notna()
+        # Initialize result with target timestamps
+        resampled = target_df.copy()
 
-            if not valid_mask.any():
-                # No value within window - use NULL
-                result_data[sensor].append(None)
-                inexact_cells[row_idx][sensor] = False
-            else:
-                # Find the row with the smallest time difference that has this sensor's value
-                valid_time_diffs = time_diffs[valid_mask]
-                closest_idx = valid_time_diffs.idxmin()
+        # Track inexact cells and counts
+        inexact_cells = {i: {} for i in range(len(target_timestamps))}
+        total_inexact = 0
 
-                # Extract the value (preserve 0 as 0, not NULL)
-                value = combined_df.loc[closest_idx, sensor]
-                result_data[sensor].append(value)
+        # Process each sensor using merge_asof (memory-efficient, O(n log n))
+        for sensor_idx, sensor in enumerate(sensor_cols):
+            if progress_callback and sensor_idx % 5 == 0:
+                progress_callback(sensor_idx, num_sensors,
+                    f"Resampling sensor {sensor_idx + 1}/{num_sensors}: {sensor}")
 
-                # Check if the source timestamp is exactly on the quarter-hour mark
-                source_time = combined_df.loc[closest_idx, 'Date']
-                is_exact = (source_time.minute % 15 == 0) and (source_time.second == 0)
-                inexact_cells[row_idx][sensor] = not is_exact
+            # Extract only Date and this sensor's values (drop NaN to save memory)
+            sensor_data = combined_sorted[['Date', sensor]].dropna(subset=[sensor]).copy()
 
-                if not is_exact:
-                    total_inexact += 1
+            if sensor_data.empty:
+                # No data for this sensor - fill with NaN
+                resampled[sensor] = None
+                for row_idx in range(len(target_timestamps)):
+                    inexact_cells[row_idx][sensor] = False
+                continue
 
-    # Create DataFrame
-    resampled = pd.DataFrame(result_data)
+            # Ensure sensor_data is sorted by Date
+            sensor_data = sensor_data.sort_values('Date').reset_index(drop=True)
+
+            # Use merge_asof to find nearest value within tolerance (forward direction)
+            merged_forward = pd.merge_asof(
+                target_df,
+                sensor_data.rename(columns={sensor: f'{sensor}_fwd', 'Date': 'Date_fwd'}),
+                left_on='Date',
+                right_on='Date_fwd',
+                direction='forward',
+                tolerance=tolerance
+            )
+
+            # Use merge_asof to find nearest value within tolerance (backward direction)
+            merged_backward = pd.merge_asof(
+                target_df,
+                sensor_data.rename(columns={sensor: f'{sensor}_bwd', 'Date': 'Date_bwd'}),
+                left_on='Date',
+                right_on='Date_bwd',
+                direction='backward',
+                tolerance=tolerance
+            )
+
+            # Vectorized selection of closer forward or backward match
+            fwd_val = merged_forward[f'{sensor}_fwd']
+            bwd_val = merged_backward[f'{sensor}_bwd']
+            fwd_time = merged_forward['Date_fwd']
+            bwd_time = merged_backward['Date_bwd']
+
+            # Calculate time differences (vectorized)
+            fwd_diff = (fwd_time - target_df['Date']).abs()
+            bwd_diff = (bwd_time - target_df['Date']).abs()
+
+            # Determine validity masks
+            fwd_valid = fwd_val.notna()
+            bwd_valid = bwd_val.notna()
+
+            # Default to backward values
+            sensor_values = bwd_val.copy()
+            source_times = bwd_time.copy()
+
+            # Where only forward is valid, use forward
+            only_fwd = fwd_valid & ~bwd_valid
+            sensor_values = sensor_values.where(~only_fwd, fwd_val)
+            source_times = source_times.where(~only_fwd, fwd_time)
+
+            # Where both are valid, pick the closer one (forward wins ties)
+            both_valid = fwd_valid & bwd_valid
+            use_fwd = both_valid & (fwd_diff <= bwd_diff)
+            sensor_values = sensor_values.where(~use_fwd, fwd_val)
+            source_times = source_times.where(~use_fwd, fwd_time)
+
+            # Where neither is valid, set to None
+            neither_valid = ~fwd_valid & ~bwd_valid
+            sensor_values = sensor_values.where(~neither_valid, None)
+
+            resampled[sensor] = sensor_values.values
+
+            # Vectorized inexact cell tracking
+            source_minute = source_times.dt.minute
+            source_second = source_times.dt.second
+            is_exact = ((source_minute % 15) == 0) & (source_second == 0)
+            is_inexact = source_times.notna() & ~is_exact
+
+            # Update inexact_cells dictionary
+            for row_idx in range(len(target_df)):
+                if source_times.iloc[row_idx] is None or pd.isna(source_times.iloc[row_idx]):
+                    inexact_cells[row_idx][sensor] = False
+                else:
+                    inexact_cells[row_idx][sensor] = is_inexact.iloc[row_idx]
+
+            total_inexact += int(is_inexact.sum())
+
+            # Free memory from temporary DataFrames
+            del sensor_data, merged_forward, merged_backward
+
+        if progress_callback:
+            progress_callback(num_sensors, num_sensors, "Applying quality flags...")
+
+    except MemoryError:
+        rows_info = f"{num_rows} rows" if 'num_rows' in dir() else "data"
+        sensors_info = f"{num_sensors} sensors" if 'num_sensors' in dir() else "sensors"
+        raise MemoryError(
+            f"Not enough memory to process {rows_info} with {sensors_info}. "
+            "Try processing fewer files at once."
+        )
+    except Exception as e:
+        raise RuntimeError(f"Resampling failed: {str(e)}")
 
     # Flag stale data per sensor (temporary for consolidation)
     # V9: Changed to 3+ consecutive non-zero values (was 4+ in V8)
