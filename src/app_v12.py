@@ -47,7 +47,7 @@ load_dotenv()
 
 # Page configuration
 st.set_page_config(
-    page_title="Fischer Data Processing - V12",
+    page_title="Fischer Data Processing App",
     page_icon="📊",
     layout="wide"
 )
@@ -64,7 +64,7 @@ if 'resampled_df' not in st.session_state:
 if 'resampling_stats' not in st.session_state:
     st.session_state.resampling_stats = {}
 if 'inexact_cells' not in st.session_state:
-    st.session_state.inexact_cells = {}  # Track which cells are inexact for coloring
+    st.session_state.inexact_cells = pd.DataFrame()  # Boolean DataFrame for inexact cell tracking (memory-efficient)
 if 'ai_debug_log' not in st.session_state:
     st.session_state.ai_debug_log = []
 if 'ai_analysis_complete' not in st.session_state:
@@ -100,7 +100,7 @@ def add_logo():
             unsafe_allow_html=True
         )
     else:
-        st.title("🔧 Fischer Data Processor V12")
+        st.title("🔧 Fischer Data Processing App")
 
 
 def inject_custom_css():
@@ -784,10 +784,10 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
         progress_callback: Optional callback for progress updates
 
     Returns:
-        Tuple of (resampled_df, stats_dict, inexact_cells_dict)
+        Tuple of (resampled_df, stats_dict, inexact_df) where inexact_df is a Boolean DataFrame
     """
     if combined_df is None or combined_df.empty:
-        return None, {}, {}
+        return None, {}, pd.DataFrame()
 
     try:
         # Create complete range of 15-minute timestamps
@@ -832,8 +832,9 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
         # Initialize result with target timestamps
         resampled = target_df.copy()
 
-        # Track inexact cells and counts
-        inexact_cells = {i: {} for i in range(len(target_timestamps))}
+        # Track inexact cells using Boolean DataFrame (memory-efficient for wide datasets)
+        # This replaces the nested dictionary which caused memory issues with 1000+ sensors
+        inexact_df = pd.DataFrame(index=range(len(target_timestamps)))
         total_inexact = 0
 
         # Process each sensor using merge_asof (memory-efficient, O(n log n))
@@ -848,8 +849,7 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
             if sensor_data.empty:
                 # No data for this sensor - fill with NaN
                 resampled[sensor] = None
-                for row_idx in range(len(target_timestamps)):
-                    inexact_cells[row_idx][sensor] = False
+                inexact_df[sensor] = False  # Vectorized: entire column is False
                 continue
 
             # Ensure sensor_data is sorted by Date
@@ -916,12 +916,8 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
             is_exact = ((source_minute % 15) == 0) & (source_second == 0)
             is_inexact = source_times.notna() & ~is_exact
 
-            # Update inexact_cells dictionary
-            for row_idx in range(len(target_df)):
-                if source_times.iloc[row_idx] is None or pd.isna(source_times.iloc[row_idx]):
-                    inexact_cells[row_idx][sensor] = False
-                else:
-                    inexact_cells[row_idx][sensor] = is_inexact.iloc[row_idx]
+            # Store as DataFrame column (vectorized - no loop needed)
+            inexact_df[sensor] = is_inexact.values
 
             total_inexact += int(is_inexact.sum())
 
@@ -1013,7 +1009,7 @@ def resample_to_quarter_hour(combined_df, tolerance_minutes=2, progress_callback
     column_order = ['Date'] + flag_cols + sensor_cols_ordered
     resampled = resampled[column_order]
 
-    return resampled, stats, inexact_cells
+    return resampled, stats, inexact_df
 
 
 def prepare_df_for_display(df):
@@ -1448,11 +1444,13 @@ def detect_percentage_columns(file_path, sheet_name, col_indices):
         return []
 
 
-def export_to_excel(resampled_df, inexact_cells, output_path):
+def export_to_excel(resampled_df, inexact_df, output_path):
     """
     Export resampled data to Excel with color-coded quality indicators.
 
-    V9 Features:
+    V12 Optimized: Uses Boolean DataFrame for inexact flags (memory-efficient for wide datasets).
+
+    Features:
     - Inexact cells are highlighted in yellow
     - Stale_Data_Flag column highlights True values in light red
     - Zero_Value_Flag column included (Clear/Single/Repeated)
@@ -1460,7 +1458,7 @@ def export_to_excel(resampled_df, inexact_cells, output_path):
 
     Args:
         resampled_df: The resampled DataFrame
-        inexact_cells: Dictionary mapping {row_idx: {sensor: True/False}}
+        inexact_df: Boolean DataFrame with sensors as columns, rows matching resampled_df
         output_path: Path to save the Excel file
 
     Returns:
@@ -1504,9 +1502,10 @@ def export_to_excel(resampled_df, inexact_cells, output_path):
                 else:
                     cell.value = value
 
-                # Color sensor cells if inexact
-                if col_name in sensor_cols and data_row_idx in inexact_cells:
-                    if inexact_cells[data_row_idx].get(col_name, False):
+                # Color sensor cells if inexact (using DataFrame for memory efficiency)
+                if col_name in sensor_cols and col_name in inexact_df.columns:
+                    # Use .iat for fast scalar access
+                    if inexact_df.iat[data_row_idx, inexact_df.columns.get_loc(col_name)]:
                         cell.fill = yellow_fill
 
                 # Color Stale_Data_Flag if True
@@ -2328,7 +2327,7 @@ def main():
                     st.session_state.combined_df = None
                     st.session_state.resampled_df = None
                     st.session_state.resampling_stats = {}
-                    st.session_state.inexact_cells = {}
+                    st.session_state.inexact_cells = pd.DataFrame()  # Reset to empty DataFrame
                     st.session_state.raw_csv_path = None
                     st.session_state.excel_output_path = None
                     st.session_state.processing_complete = False

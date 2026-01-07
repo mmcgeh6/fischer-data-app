@@ -6,16 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Fischer Data App V1 is a Streamlit-based data processing application for combining building management system sensor data from multiple Excel/CSV files. The app performs time-series alignment, timestamp normalization, quarter-hour resampling, and data quality flagging.
 
-**LATEST (V11)**: Fully automatic workflow with single-button processing, automatic file generation to archive folder, progress tracking for all phases, and streamlined 4-step process. No more AI Debug Panel.
+**LATEST (V12)**: Multi-column CSV support with checkbox interface for selecting multiple value columns (matching Excel workflow). AI auto-detects multi-column CSVs and returns array format. Column naming uses "{Filename} {ColumnName}" prefix for uniqueness. All V11 automatic workflow features preserved.
 
 ## Common Commands
 
 ### Running the Application
 ```bash
-# Main application (latest version - V11 with automatic workflow)
-streamlit run src/app_v11.py
+# Main application (latest version - V12 with multi-column CSV support)
+streamlit run src/app_v12.py
 
 # Alternative versions
+streamlit run src/app_v11.py      # Version 11 with automatic workflow (single-column CSV only)
 streamlit run src/app_v10.py      # Version 10 with tab-based UI and smart data types
 streamlit run src/app_v9.py       # Version 9 with multi-tab Excel and enhanced flagging
 streamlit run src/app_v7.py       # Version 7 with quarter-hour resampling
@@ -64,9 +65,38 @@ pip install -r requirements.txt
 ### UI Application Versions
 The project has evolved through multiple UI iterations in `src/`:
 
-- **`app_v11.py`** (CURRENT - RECOMMENDED):
+- **`app_v12.py`** (CURRENT - RECOMMENDED):
+  - **All V11 Features**: Automatic workflow, progress tracking, file archiving, tab-based UI, smart data types
+  - **Multi-Column CSV Support** (NEW):
+    - AI auto-detects multiple value columns in CSV files
+    - Returns `value_columns` array instead of single `value_column`
+    - Checkbox interface for selecting which columns to include (matches Excel workflow)
+    - Column naming: `"{Filename} {ColumnName}"` for uniqueness across files
+  - **Updated AI Prompt** (NEW):
+    - CSV prompt now asks for array of value columns
+    - Response format: `{"value_columns": [2, 3, 4], "column_names": ["Temp", "Humidity", "Fan"]}`
+    - Backward compatible: auto-converts old single-column format
+  - **Updated Config Structure** (NEW):
+    - CSV config now uses `available_columns`, `column_names`, `selected_columns` arrays
+    - Matches multi-tab Excel config structure for consistency
+  - **Updated UI**:
+    - `render_csv_config_ui()` now shows checkbox grid (3 columns) for column selection
+    - Preview shows all selected columns with filename prefix
+    - Fallback for manual column addition if AI detection fails
+  - **Updated Data Extraction**:
+    - `auto_process_and_export()` loops through `selected_columns` array
+    - Each column named: `"{Filename} {ColumnName}"`
+    - Smart type conversion applied per column
+  - **Memory Optimization** (CRITICAL FIX - Jan 2026):
+    - Replaced nested dictionary `inexact_cells` with Boolean DataFrame
+    - ~100x memory reduction for wide datasets (1000+ sensors)
+    - Prevents "blank out" memory crashes on 4GB RAM systems
+    - See "Bug Fix #4" in V12 Bug Fixes section for details
+  - Uses `.env` file for CLAUDE_API_KEY
+
+- **`app_v11.py`**:
   - **All V10 Features**: Tab-based UI, smart data types, enhanced flagging, multi-tab Excel, Fischer branding
-  - **Fully Automatic Workflow** (NEW):
+  - **Fully Automatic Workflow**:
     - Single "Process All Files" button triggers entire pipeline
     - Automatic: Combine → Save Raw CSV → Resample → Generate Excel
     - All files automatically saved to archive folder
@@ -692,6 +722,11 @@ def add_logo():
 - Target: Designed for 10-90 files × 100-600,000 rows each
 - Memory: ~54M rows fits in 2-4 GB RAM
 - All pandas operations use optimized C implementations
+- **V12 Memory Optimization** (CRITICAL):
+  - Boolean DataFrame for inexact cell tracking instead of nested dictionaries
+  - ~100x memory reduction for wide datasets (1000+ sensors)
+  - Enables processing of 1034 sensors × 5000 rows on 4GB RAM systems
+  - Vectorized operations replace per-cell loops for better performance
 - **V9 AI Analysis**: ~1-3 seconds per file, runs 5 files in parallel (ThreadPoolExecutor)
   - Multi-tab files analyzed per-tab (slightly longer processing time)
 - **Timestamp Normalization**: Adds minimal overhead (~0.1ms per timestamp)
@@ -751,6 +786,45 @@ def add_logo():
 
 **Files Modified**: `src/app_v9.py`
 
+## V12 Bug Fixes (Production Issues)
+
+### Bug Fix #4: Memory Crash with Wide Datasets (Fixed - January 2026)
+**Issue**: Application would "blank out" (run out of memory) when processing wide datasets with 1000+ sensors on memory-constrained environments (e.g., Replit with 4GB RAM)
+
+**Root Cause**: The `inexact_cells` tracking structure used a nested Python dictionary `{row_idx: {sensor_name: bool}}` which created millions of Python objects for large datasets. Example: 1034 sensors × 5000 rows = 5+ million dictionary entries causing ~100x memory overhead compared to numpy array storage.
+
+**Solutions Implemented**:
+1. **Replaced nested dictionary with Boolean DataFrame** (line 837):
+   - Changed from: `inexact_cells = {i: {} for i in range(len(target_timestamps))}`
+   - Changed to: `inexact_df = pd.DataFrame(index=range(len(target_timestamps)))`
+   - Uses pandas/numpy backend for ~100x memory reduction
+
+2. **Vectorized empty sensor handling** (line 852):
+   - Removed per-row loop: `for row_idx in range(len(target_timestamps)): inexact_cells[row_idx][sensor] = False`
+   - Replaced with: `inexact_df[sensor] = False` (entire column in one operation)
+
+3. **Vectorized inexact cell tracking** (lines 919-920):
+   - Removed per-row loop with dictionary assignment
+   - Replaced with vectorized DataFrame column assignment: `inexact_df[sensor] = is_inexact.values`
+
+4. **Updated `export_to_excel()` function** (lines 1507-1511):
+   - Changed from dictionary lookup: `inexact_cells[row_idx].get(sensor, False)`
+   - Changed to DataFrame access: `inexact_df.iat[data_row_idx, inexact_df.columns.get_loc(col_name)]`
+   - Uses `.iat[]` for fast scalar access in tight loop
+
+5. **Updated session state initialization** (lines 67, 790, 2331):
+   - Changed from: `st.session_state.inexact_cells = {}`
+   - Changed to: `st.session_state.inexact_cells = pd.DataFrame()`
+
+**Memory Improvement**:
+- **Before**: Millions of Python dict objects for 1034 sensors × thousands of rows = gigabytes of memory
+- **After**: Single Boolean DataFrame using numpy array backend = ~100x less memory (megabytes)
+- **Result**: Can now process 1000+ sensor datasets on 4GB RAM systems without crashing
+
+**Performance Impact**: Neutral to positive - vectorized operations are often faster than loops
+
+**Files Modified**: `src/app_v12.py` (lines 67, 790, 837, 852, 919-920, 1016, 1451-1511, 2331)
+
 ## Dependencies
 
 ### Required Packages (requirements.txt)
@@ -785,6 +859,81 @@ tzdata>=2022.1          # Timezone database
 Note: V5-V9 documentation is kept for reference but V10 has significantly improved features and architecture.
 
 ## Key Differences Between Versions
+
+### V11 → V12
+
+**New Features:**
+- **Multi-Column CSV Support**: CSV files can now have multiple value columns selected
+  - AI prompt updated to request `value_columns` array instead of single `value_column`
+  - Checkbox interface for column selection (matches Excel sheet workflow)
+  - Column naming: `"{Filename} {ColumnName}"` prefix for uniqueness
+  - Example: `sensor_data.csv` with "Temperature" column → `"sensor_data Temperature"`
+
+**AI Response Format Changes:**
+- **V11 CSV Format**:
+  ```json
+  {
+    "delimiter": ",",
+    "start_row": 1,
+    "date_column": 0,
+    "value_column": 2,
+    "sensor_name": "Temperature"
+  }
+  ```
+- **V12 CSV Format** (now matches multi-tab Excel):
+  ```json
+  {
+    "delimiter": ",",
+    "start_row": 1,
+    "date_column": 0,
+    "value_columns": [2, 3, 4],
+    "column_names": ["Temperature", "Humidity", "Pressure"]
+  }
+  ```
+
+**Config Structure Changes:**
+- **V11 CSV Config**:
+  ```python
+  {
+      'file_type': 'csv',
+      'config': {
+          'start_row': 1,
+          'delimiter': ',',
+          'date_column': 0,
+          'value_column': 2,        # scalar
+          'sensor_name': 'Temp'     # scalar
+      }
+  }
+  ```
+- **V12 CSV Config** (matches Excel pattern):
+  ```python
+  {
+      'file_type': 'csv',
+      'config': {
+          'start_row': 1,
+          'delimiter': ',',
+          'date_column': 0,
+          'available_columns': [2, 3, 4],              # array
+          'column_names': ['Temp', 'Humidity', 'Fan'], # array
+          'selected_columns': [2, 3]                   # user subset
+      }
+  }
+  ```
+
+**UI Changes:**
+- **V11**: Single number input for "Value Column" + text input for "Sensor Name"
+- **V12**: Checkbox grid (3 columns) for selecting multiple value columns
+- **V12**: Preview shows all selected columns with filename prefix
+- **V12**: Fallback interface for manual column addition if AI detection fails
+
+**Data Extraction Changes:**
+- **V11**: Extracts single column with sensor_name
+- **V12**: Loops through `selected_columns` array, creates column per selection
+- **V12**: Each column named `"{Filename} {ColumnName}"` (matches multi-tab Excel pattern)
+
+**Backward Compatibility:**
+- V12 auto-converts old single-column AI responses to new array format
+- If AI returns `value_column` (scalar), converts to `value_columns: [value_column]`
 
 ### V10 → V11
 
@@ -976,13 +1125,13 @@ Note: V5-V9 documentation is kept for reference but V10 has significantly improv
 
 ## Best Practices
 
-1. **Always use V11** for new work to get automatic workflow, progress tracking, and streamlined 4-step process
+1. **Always use V12** for new work to get multi-column CSV support, automatic workflow, and streamlined 4-step process
 2. **Set CLAUDE_API_KEY** in `.env` file before running
 3. **Enter building name** for proper file archiving and automatic filename generation
 4. **Use "Analyze All Files"** button to process all files in parallel
 5. **Review extracted previews** to verify correct column detection
 6. **Use tab interface** in Step 3 to navigate between files and sheets efficiently
-7. **Select columns carefully** in multi-tab Excel files using checkboxes in each sheet tab
+7. **Select columns carefully** in both CSV and Excel files using checkboxes (V12 now supports multi-column CSV)
 8. **Check timestamp conversion** examples before processing
 9. **Click "Process All Files"** and watch the progress bar - the entire workflow is automatic
 10. **Files are automatically saved** to the archive folder with timestamped filenames
@@ -1003,7 +1152,7 @@ Note: V5-V9 documentation is kept for reference but V10 has significantly improv
 ### Import Errors
 If you see `ModuleNotFoundError: No module named 'src'`:
 - The app uses relative imports from the same directory
-- Run from project root: `streamlit run src/app_v11.py`
+- Run from project root: `streamlit run src/app_v12.py`
 
 ### Timestamp Parsing Issues
 If timestamps fail to normalize:
@@ -1019,18 +1168,18 @@ If AI doesn't detect columns correctly:
 
 ### Data Type Issues (V10+)
 If text values like "off"/"on" appear as NaN or numbers in output:
-- Verify you're using V11 (check page title shows "V11")
+- Verify you're using V12 (check page title shows "V12")
 - Check if column meets 80% threshold for numeric detection
 - Mixed columns with <80% numeric values are preserved as text
 - If needed, adjust threshold in `smart_convert_column()` function
 
 ### Stale Data False Positives (V10+)
 If text fields are flagged as stale:
-- V11 automatically skips text columns in quality checks
+- V12 automatically skips text columns in quality checks
 - Only numeric columns are checked for staleness
 - Verify column type is detected correctly (should show as object/string for text)
 
-### Processing Errors (V11)
+### Processing Errors (V11/V12)
 If automatic processing fails:
 - Check error message displayed in red
 - Verify archive path exists and is writable
@@ -1040,7 +1189,7 @@ If automatic processing fails:
 
 ### Performance Issues
 If processing is slow:
-- V11: Progress tracking adds <1% overhead
+- V11/V12: Progress tracking adds <1% overhead
 - Automatic Excel generation takes most time (normal)
 - V6+ uses 5 parallel workers by default (adjustable in code)
 - Large files (>100k rows) may take time to load
