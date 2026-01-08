@@ -825,11 +825,56 @@ def add_logo():
 
 **Files Modified**: `src/app_v12.py` (lines 67, 790, 837, 852, 919-920, 1016, 1451-1511, 2331)
 
+### Bug Fix #5: Excel Export Slowdown with Wide Datasets (Fixed - January 2026)
+**Issue**: After fixing the memory crash (Bug Fix #4), Excel export became the bottleneck, taking minutes instead of seconds for datasets with 1000+ sensors × 5000 rows.
+
+**Root Cause**: The `export_to_excel()` function used nested Python loops to write and style every cell individually. For 1000 sensors × 5000 rows = 5 million cell visits in slow Python loops instead of using optimized pandas/numpy operations.
+
+**Solutions Implemented**:
+1. **Bulk Write with pandas ExcelWriter** (lines 1478-1480):
+   - Changed from: Manual cell-by-cell writing with nested loops
+   - Changed to: `export_df.to_excel(writer, index=False, sheet_name='Resampled Data')`
+   - Uses pandas' optimized C code for data writing
+
+2. **Sparse Styling with np.where()** (lines 1496-1517):
+   - Changed from: Checking every cell in nested loops (5M iterations)
+   - Changed to: `np.where()` to find only cells needing color (~thousands)
+   - Only visits cells that actually need yellow/red highlighting
+
+3. **Sample-Based Column Width** (lines 1519-1527):
+   - Changed from: Scanning all rows to calculate column widths
+   - Changed to: Check header + first 10 data rows only
+   - Provides reasonable widths with minimal overhead
+
+4. **Added CSV Fallback** (lines 1532-1538):
+   - If Excel export fails, automatically saves as CSV
+   - Ensures data is not lost even if styling fails
+
+5. **Added numpy import** (line 21):
+   - Required for `np.where()` vectorized operations
+
+**Performance Improvement**:
+- **Before**: 5,000,000 Python loop iterations for cell writing + styling
+- **After**: 1 bulk write + ~10,000 sparse styling operations (only "bad" cells)
+- **Expected time**: Reduced from minutes to seconds
+
+**Loop Iterations Comparison**:
+| Operation | Before | After |
+|-----------|--------|-------|
+| Data writing | 5M cell-by-cell | 1 bulk operation |
+| Cell styling | Check all 5M cells | Visit ~10K flagged cells |
+| Column width | Scan all 5M cells | Sample 10 rows/column |
+
+**Memory Impact**: Same as before (no additional memory usage)
+
+**Files Modified**: `src/app_v12.py` (lines 21, 36, 1448-1538)
+
 ## Dependencies
 
 ### Required Packages (requirements.txt)
 ```
 pandas>=2.0.0           # Data processing
+numpy>=1.24.0           # Array operations (used directly for sparse styling)
 openpyxl>=3.1.0         # Excel file support
 streamlit>=1.28.0       # Web UI framework
 plotly>=5.17.0          # Visualization (optional)

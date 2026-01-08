@@ -18,6 +18,7 @@ All V11 Features:
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
 import warnings
@@ -32,8 +33,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 from pathlib import Path
 from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, numbers
-from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill, Font
 import shutil
 
 # Add src directory to path for imports
@@ -1448,7 +1448,9 @@ def export_to_excel(resampled_df, inexact_df, output_path):
     """
     Export resampled data to Excel with color-coded quality indicators.
 
-    V12 Optimized: Uses Boolean DataFrame for inexact flags (memory-efficient for wide datasets).
+    V12 Optimized: Uses Bulk Write + Sparse Styling for performance.
+    - Bulk writes data using pandas (fast C code instead of Python loops)
+    - Only visits cells that need coloring (sparse iteration with np.where)
 
     Features:
     - Inexact cells are highlighted in yellow
@@ -1465,72 +1467,73 @@ def export_to_excel(resampled_df, inexact_df, output_path):
         True if successful, False otherwise
     """
     try:
-        # Create a new workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Resampled Data"
+        # 1. PREPARE DATA
+        export_df = resampled_df.copy()
 
-        # Define color fills
-        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # Yellow for inexact
-        red_fill = PatternFill(start_color="FFB6C1", end_color="FFB6C1", fill_type="solid")  # Light red for stale
+        # Format Date as string to preserve formatting
+        if 'Date' in export_df.columns:
+            export_df['Date'] = export_df['Date'].dt.strftime('%m/%d/%Y %H:%M:%S')
 
-        # Get sensor columns (exclude Date and flag columns)
-        sensor_cols = [col for col in resampled_df.columns
-                      if col not in ['Date', 'Stale_Data_Flag', 'Stale_Sensors', 'Zero_Value_Flag']]
+        # 2. BULK WRITE (fast - uses optimized C code)
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='Resampled Data')
 
-        # Create column index mapping
-        col_indices = {col: idx + 1 for idx, col in enumerate(resampled_df.columns)}
+            wb = writer.book
+            ws = writer.sheets['Resampled Data']
 
-        # Write header row
-        for col_idx, col_name in enumerate(resampled_df.columns, start=1):
-            cell = ws.cell(row=1, column=col_idx, value=col_name)
-            cell.font = Font(bold=True)
+            # Define Styles
+            yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            red_fill = PatternFill(start_color="FFB6C1", end_color="FFB6C1", fill_type="solid")
 
-        # Write data rows and apply coloring
-        for row_idx, row_data in enumerate(resampled_df.itertuples(index=False), start=2):
-            data_row_idx = row_idx - 2  # Adjust for 0-based indexing in inexact_cells
+            # Bold headers
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
 
-            for col_idx, (col_name, value) in enumerate(zip(resampled_df.columns, row_data), start=1):
-                cell = ws.cell(row=row_idx, column=col_idx)
+            # 3. SPARSE STYLING (smart - only visit cells that need color)
+            col_map = {name: i + 1 for i, name in enumerate(export_df.columns)}
 
-                # Handle date formatting
-                if col_name == 'Date':
-                    if pd.notna(value):
-                        cell.value = value.strftime('%m/%d/%Y %H:%M:%S')
-                    else:
-                        cell.value = None
-                else:
-                    cell.value = value
+            # A. Color Stale Flags (Red)
+            if 'Stale_Data_Flag' in export_df.columns:
+                stale_col_idx = col_map['Stale_Data_Flag']
+                # Use numpy to find True values instantly
+                stale_mask = export_df['Stale_Data_Flag'].values == True
+                stale_indices = np.where(stale_mask)[0]
 
-                # Color sensor cells if inexact (using DataFrame for memory efficiency)
-                if col_name in sensor_cols and col_name in inexact_df.columns:
-                    # Use .iat for fast scalar access
-                    if inexact_df.iat[data_row_idx, inexact_df.columns.get_loc(col_name)]:
-                        cell.fill = yellow_fill
+                for r_idx in stale_indices:
+                    # Excel row = index + 2 (1 for header, 1 because index starts at 0)
+                    ws.cell(row=r_idx + 2, column=stale_col_idx).fill = red_fill
 
-                # Color Stale_Data_Flag if True
-                if col_name == 'Stale_Data_Flag' and value == True:
-                    cell.fill = red_fill
+            # B. Color Inexact Cells (Yellow)
+            safe_inexact_df = inexact_df.fillna(False)
+            common_cols = [c for c in safe_inexact_df.columns if c in col_map]
 
-        # Auto-size columns
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                try:
+            for col_name in common_cols:
+                excel_col_idx = col_map[col_name]
+                # Find only the "bad" cells for this column
+                bad_indices = np.where(safe_inexact_df[col_name].values)[0]
+
+                for r_idx in bad_indices:
+                    ws.cell(row=r_idx + 2, column=excel_col_idx).fill = yellow_fill
+
+            # 4. SAMPLE-BASED AUTO-WIDTH (fast - only check first 10 rows)
+            for col_cells in ws.columns:
+                col_letter = col_cells[0].column_letter
+                # Check header + first 10 data rows only
+                max_len = len(str(col_cells[0].value or ''))
+                for cell in col_cells[1:11]:
                     if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
+                        max_len = max(max_len, len(str(cell.value)))
+                ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
 
-        # Save workbook
-        wb.save(output_path)
         return True
 
     except Exception as e:
-        print(f"Error exporting to Excel: {str(e)}")
+        print(f"Export error: {str(e)}")
+        # Fallback: save as CSV if Excel fails
+        try:
+            resampled_df.to_csv(str(output_path).replace('.xlsx', '.csv'), index=False)
+        except:
+            pass
         return False
 
 
