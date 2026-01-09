@@ -5,7 +5,7 @@ This application processes building management system (BMS) data exports from mu
 
 ## Project Structure
 ```
-Fischer Data App V1/
+Fischer Data Processing App/
 ├── CSVdata/              # Input data files (raw sensor exports)
 ├── src/                  # Source code
 ├── output/               # Generated clean CSV files

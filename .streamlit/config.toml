@@ -6,8 +6,8 @@ textColor = "#151515"
 font = "sans serif"
 
 [server]
-headless = true
-address = "0.0.0.0"
+headless = false
+address = "localhost"
 port = 5000
 enableCORS = false
 enableXsrfProtection = false

@@ -10,7 +10,10 @@
       "Bash(.venv/Scripts/python.exe:*)",
       "Bash(powershell -Command:*)",
       "Bash(powershell:*)",
-      "Bash(copy:*)"
+      "Bash(copy:*)",
+      "Bash(.venv311Scriptspython.exe launcher.py)",
+      "Bash(\"./.venv311/Scripts/python.exe\" launcher.py)",
+      "Bash(timeout 10 \"./.venv311/Scripts/python.exe\" launcher.py)"
     ],
     "deny": [],
     "ask": []

@@ -1398,6 +1398,9 @@ def extract_multi_tab_data(file_path, file_config):
             # Drop rows with invalid dates
             tab_df = tab_df.dropna(subset=['Date'])
 
+            # Deduplicate by Date within each tab to prevent Cartesian products in outer join
+            tab_df = tab_df.drop_duplicates(subset=['Date'], keep='first')
+
             if not tab_df.empty:
                 all_dataframes.append(tab_df)
 
@@ -1748,6 +1751,9 @@ def auto_process_and_export(
                     # Remove timezone if present
                     if pd.api.types.is_datetime64tz_dtype(df_clean['Date']):
                         df_clean['Date'] = df_clean['Date'].dt.tz_localize(None)
+
+                    # Deduplicate by Date within each file to prevent Cartesian products in outer join
+                    df_clean = df_clean.drop_duplicates(subset=['Date'], keep='first')
 
                     loaded_dfs.append(df_clean)
 
@@ -2314,9 +2320,10 @@ def main():
                                 {'Sensor': sensor, 'Stale Count': count}
                                 for sensor, count in stale_by_sensor.items()
                                 if count > 0
-                            ]).sort_values('Stale Count', ascending=False)
+                            ])
 
                             if not stale_df.empty:
+                                stale_df = stale_df.sort_values('Stale Count', ascending=False)
                                 st.dataframe(stale_df, height=300)
                             else:
                                 st.success("✅ No stale data detected!")
