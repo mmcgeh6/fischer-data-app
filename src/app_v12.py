@@ -318,6 +318,7 @@ def build_ai_prompt(file_name, text_sample):
     Build the AI prompt for column detection.
 
     V12: Now asks for MULTIPLE value columns (array) instead of single value_column.
+    V12+: Also detects stacked/long format with equipment identifier columns and split date/time.
     """
     return f"""Analyze the first 15 lines of this CSV/Excel file sample to determine the column configuration for data processing.
 
@@ -332,6 +333,8 @@ Based on this data, identify:
 3. Which column index (0-based) contains the date/timestamp
 4. Which column indices (0-based) contain sensor values/readings - there may be MULTIPLE value columns
 5. The names of the value columns (extract from headers or suggest descriptive names)
+6. Whether the file uses a "stacked/long" format where multiple equipment/sensors share the same timestamp rows and an identifier column (like "Equipment Name") distinguishes which equipment each row belongs to. In stacked format, data for one equipment is listed first (e.g. all timestamps for HX-01), then repeated for the next equipment (HX-02), etc.
+7. Whether the date and time are in SEPARATE columns (e.g. "Property Date" in one column, "Property Time" in another)
 
 Return ONLY a JSON object in this exact format with no additional text:
 {{
@@ -339,7 +342,10 @@ Return ONLY a JSON object in this exact format with no additional text:
   "start_row": 1,
   "date_column": 0,
   "value_columns": [2, 3, 4],
-  "column_names": ["Temperature", "Humidity", "Pressure"]
+  "column_names": ["Temperature", "Humidity", "Pressure"],
+  "is_stacked": false,
+  "equipment_column": null,
+  "time_column": null
 }}
 
 Rules:
@@ -347,6 +353,9 @@ Rules:
 - start_row is where column headers are located (data begins on start_row+1)
 - value_columns should be a LIST of column indices (can be one or multiple)
 - column_names should match the order of value_columns
+- is_stacked: set to true if data has an equipment/identifier column and rows for different equipment share the same timestamps
+- equipment_column: 0-based column index of the equipment/identifier column (null if not stacked)
+- time_column: 0-based column index of a SEPARATE time column if date and time are split across two columns (null if timestamp is in a single column). Do NOT include the time column in value_columns.
 - If a column doesn't exist, use -1 as the value
 - Return only valid JSON with no explanations or additional text"""
 
@@ -499,6 +508,11 @@ def analyze_single_file(file_name, file_path, api_key):
                 value_cols = parsed.get('value_columns', [2])
                 col_names = parsed.get('column_names', [f"Column_{i}" for i in value_cols])
 
+            # Detect stacked/long format fields
+            is_stacked = parsed.get('is_stacked', False)
+            equipment_column = parsed.get('equipment_column', None)
+            time_column = parsed.get('time_column', None)
+
             # Build internal config structure (matches Excel multi-tab format)
             config = {
                 'start_row': parsed.get('start_row', 0),
@@ -508,6 +522,12 @@ def analyze_single_file(file_name, file_path, api_key):
                 'column_names': col_names,
                 'selected_columns': value_cols.copy()  # Initially all selected
             }
+
+            # Add stacked-specific fields if detected
+            if is_stacked and equipment_column is not None:
+                config['is_stacked'] = True
+                config['equipment_column'] = equipment_column
+                config['time_column'] = time_column
 
             debug_entry['response']['parsed_json'] = config
             debug_entry['success'] = True
@@ -640,11 +660,18 @@ def analyze_file_with_detection(file_name, file_path, api_key):
         # Analyze CSV or single-tab Excel file
         config, debug_entry = analyze_single_file(file_name, file_path, api_key)
         if config:
-            # Wrap in standard format for consistency
-            config = {
-                'file_type': 'csv' if file_type == 'csv' else 'excel_single_tab',
-                'config': config
-            }
+            # Check if AI detected stacked/long format
+            if config.get('is_stacked', False) and config.get('equipment_column') is not None:
+                config = {
+                    'file_type': 'stacked_long',
+                    'config': config
+                }
+            else:
+                # Wrap in standard format for consistency
+                config = {
+                    'file_type': 'csv' if file_type == 'csv' else 'excel_single_tab',
+                    'config': config
+                }
 
     return config, debug_entry
 
@@ -1321,6 +1348,147 @@ def render_csv_config_ui(file_name, file_path, config):
             st.dataframe(prepare_df_for_display(df_preview), height=300)
 
 
+def render_stacked_config_ui(file_name, file_path, config):
+    """
+    Render configuration UI for stacked/long format files.
+
+    Shows standard settings (start_row, delimiter, date_column), stacked-specific
+    settings (time_column, equipment_column), detected equipment names preview,
+    and value column checkboxes.
+    """
+    inner_config = config.get('config', config)
+
+    st.info("**Stacked/Long Format Detected** - Data for multiple equipment groups shares the same timestamps. "
+            "The data will be automatically pivoted to wide format (one column per equipment per value) during processing.")
+
+    # Row 1: Basic settings
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        start_row = st.number_input(
+            "Start Row", min_value=0, max_value=10,
+            value=inner_config.get('start_row', 0),
+            key=f"stacked_start_{file_name}",
+            help="Row where column headers are located (0-based)"
+        )
+
+    with col2:
+        delimiter_options = [',', '\t', ';', '|']
+        delimiter_labels = ['Comma (,)', 'Tab (\\t)', 'Semicolon (;)', 'Pipe (|)']
+        default_delim = inner_config.get('delimiter', ',')
+        try:
+            delim_idx = delimiter_options.index(default_delim)
+        except ValueError:
+            delim_idx = 0
+        delimiter = st.selectbox(
+            "Delimiter", options=delimiter_options,
+            format_func=lambda x: delimiter_labels[delimiter_options.index(x)],
+            index=delim_idx, key=f"stacked_delim_{file_name}"
+        )
+
+    with col3:
+        date_column = st.number_input(
+            "Date Column", min_value=0, max_value=20,
+            value=inner_config.get('date_column', 0),
+            key=f"stacked_date_{file_name}",
+            help="Column index for date (0-based)"
+        )
+
+    # Row 2: Stacked-specific settings
+    col4, col5 = st.columns(2)
+
+    with col4:
+        default_time = inner_config.get('time_column', None)
+        time_column = st.number_input(
+            "Time Column (or -1 if combined with date)",
+            min_value=-1, max_value=20,
+            value=default_time if default_time is not None else -1,
+            key=f"stacked_time_{file_name}",
+            help="Separate time column index, or -1 if timestamp is in a single column"
+        )
+
+    with col5:
+        equipment_column = st.number_input(
+            "Equipment/Identifier Column",
+            min_value=0, max_value=20,
+            value=inner_config.get('equipment_column', 1),
+            key=f"stacked_equip_{file_name}",
+            help="Column that identifies which equipment each row belongs to"
+        )
+
+    # Show detected equipment names (preview first 500 rows to find all groups)
+    df_preview = parse_file_with_config(file_path, start_row, delimiter, num_rows=500)
+    unique_equip = []
+    if df_preview is not None and equipment_column < len(df_preview.columns):
+        equip_series = df_preview.iloc[:, equipment_column].dropna().astype(str).str.strip()
+        unique_equip = equip_series.unique().tolist()
+        st.markdown(f"**Detected Equipment ({len(unique_equip)} groups):** {', '.join(unique_equip[:20])}")
+        if len(unique_equip) > 20:
+            st.caption(f"... and {len(unique_equip) - 20} more")
+
+    # Value column checkboxes
+    st.markdown("**Select Value Columns to Include (will be pivoted per equipment):**")
+
+    available_cols = inner_config.get('available_columns', [])
+    column_names = inner_config.get('column_names', [])
+    currently_selected = inner_config.get('selected_columns', available_cols.copy())
+
+    new_selected = []
+    if available_cols:
+        checkbox_cols = st.columns(3)
+        for i, (col_idx, col_name) in enumerate(zip(available_cols, column_names)):
+            is_checked = col_idx in currently_selected
+            with checkbox_cols[i % 3]:
+                if st.checkbox(
+                    f"**{col_name}** (col {col_idx})",
+                    value=is_checked,
+                    key=f"stacked_col_{file_name}_{col_idx}"
+                ):
+                    new_selected.append(col_idx)
+
+        n_equip = len(unique_equip) if unique_equip else 0
+        if new_selected and n_equip > 0:
+            st.success(f"{len(new_selected)} value column(s) x {n_equip} equipment groups = "
+                       f"{len(new_selected) * n_equip} output columns")
+        elif new_selected:
+            st.success(f"{len(new_selected)} value column(s) selected")
+        else:
+            st.warning("No columns selected")
+    else:
+        # Fallback manual entry
+        st.warning("No value columns detected by AI. Add manually:")
+        manual_col = st.number_input("Value Column Index", min_value=0, max_value=20, value=3,
+                                     key=f"stacked_manual_col_{file_name}")
+        manual_name = st.text_input("Column Name", value="Value",
+                                    key=f"stacked_manual_name_{file_name}")
+        available_cols = [manual_col]
+        column_names = [manual_name]
+        new_selected = [manual_col]
+
+    # Update config in session state
+    effective_time_col = time_column if time_column >= 0 else None
+
+    st.session_state.file_configs[file_name] = {
+        'file_type': 'stacked_long',
+        'config': {
+            'start_row': start_row,
+            'delimiter': delimiter,
+            'date_column': date_column,
+            'time_column': effective_time_col,
+            'equipment_column': equipment_column,
+            'is_stacked': True,
+            'available_columns': available_cols,
+            'column_names': column_names,
+            'selected_columns': new_selected
+        }
+    }
+
+    # Show preview of raw data
+    with st.expander("View Raw File Data (first 10 rows)", expanded=False):
+        if df_preview is not None:
+            st.dataframe(prepare_df_for_display(df_preview.head(10)), height=300)
+
+
 def extract_multi_tab_data(file_path, file_config):
     """
     Extract data from multi-tab Excel file.
@@ -1409,6 +1577,122 @@ def extract_multi_tab_data(file_path, file_config):
             continue
 
     return all_dataframes
+
+
+def pivot_stacked_to_wide(df, config):
+    """
+    Transform stacked/long format data to wide format.
+
+    Stacked format has multiple equipment groups sharing the same timestamps,
+    listed sequentially. This function pivots the data so each equipment×value
+    combination becomes its own column.
+
+    Args:
+        df: Raw DataFrame loaded from file (all string dtype)
+        config: Inner config dict with keys:
+            - date_column (int): column index for date
+            - time_column (int or None): column index for separate time column
+            - equipment_column (int): column index for equipment/identifier
+            - selected_columns (list[int]): value column indices
+            - available_columns (list[int]): all detected value column indices
+            - column_names (list[str]): names for available_columns
+
+    Returns:
+        Wide-format DataFrame with columns: [Date, "equip value1", "equip value2", ...]
+        Date column is datetime type, value columns are smart-converted.
+        Returns None if pivot fails.
+    """
+    try:
+        # 1. MERGE DATE + TIME if split
+        date_col_idx = config['date_column']
+        time_col_idx = config.get('time_column', None)
+
+        date_series = df.iloc[:, date_col_idx].astype(str)
+
+        if time_col_idx is not None and time_col_idx >= 0:
+            time_series = df.iloc[:, time_col_idx].astype(str)
+            merged_ts = date_series.str.strip() + ' ' + time_series.str.strip()
+        else:
+            merged_ts = date_series
+
+        # 2. NORMALIZE TIMESTAMPS
+        normalized_dates = []
+        for ts_val in merged_ts:
+            try:
+                normalized = format_timestamp_mdy_hms(str(ts_val))
+                normalized_dates.append(pd.to_datetime(normalized, format='%m/%d/%Y %H:%M:%S'))
+            except Exception:
+                try:
+                    normalized_dates.append(pd.to_datetime(ts_val, format='mixed', errors='coerce'))
+                except Exception:
+                    normalized_dates.append(pd.NaT)
+
+        df = df.copy()
+        df['__Date__'] = normalized_dates
+
+        # Drop rows with invalid dates
+        df = df.dropna(subset=['__Date__'])
+
+        # Remove timezone if present
+        if pd.api.types.is_datetime64tz_dtype(df['__Date__']):
+            df['__Date__'] = df['__Date__'].dt.tz_localize(None)
+
+        # 3. GET EQUIPMENT COLUMN
+        equip_col_idx = config['equipment_column']
+        df['__Equipment__'] = df.iloc[:, equip_col_idx].astype(str).str.strip()
+        df = df.dropna(subset=['__Equipment__'])
+
+        # 4. EXTRACT SELECTED VALUE COLUMNS
+        selected_cols = config.get('selected_columns', [])
+        available_cols = config.get('available_columns', [])
+        column_names = config.get('column_names', [])
+
+        value_col_names = []
+        for col_idx in selected_cols:
+            if col_idx < len(df.columns):
+                try:
+                    name_idx = available_cols.index(col_idx)
+                    col_name = column_names[name_idx]
+                except (ValueError, IndexError):
+                    col_name = f"Column_{col_idx}"
+                value_col_names.append(col_name)
+
+        # 5. BUILD PIVOT-READY DATAFRAME
+        pivot_data = {'Date': df['__Date__'], 'Equipment': df['__Equipment__']}
+        for col_idx, col_name in zip(selected_cols, value_col_names):
+            if col_idx < len(df.columns):
+                pivot_data[col_name] = smart_convert_column(df.iloc[:, col_idx], threshold=0.8).values
+
+        pivot_df = pd.DataFrame(pivot_data)
+
+        # 6. PIVOT: long -> wide
+        wide_df = pivot_df.pivot_table(
+            index='Date',
+            columns='Equipment',
+            values=value_col_names,
+            aggfunc='first'
+        )
+
+        # 7. FLATTEN MULTI-LEVEL COLUMN INDEX
+        # pivot_table creates MultiIndex: (value_name, equipment_name)
+        # Flatten to: "equipment_name value_name"
+        wide_df.columns = [f"{equip} {val}" for val, equip in wide_df.columns]
+
+        # 8. RESET INDEX to make Date a regular column
+        wide_df = wide_df.reset_index()
+
+        # 9. SORT columns alphabetically (equipment grouped)
+        date_col = ['Date']
+        sensor_cols = sorted([c for c in wide_df.columns if c != 'Date'])
+        wide_df = wide_df[date_col + sensor_cols]
+
+        return wide_df
+
+    except Exception as e:
+        print(f"Error in pivot_stacked_to_wide: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def detect_percentage_columns(file_path, sheet_name, col_indices):
@@ -1667,6 +1951,45 @@ def auto_process_and_export(
             if file_type == 'excel_multi_tab':
                 multi_tab_dfs = extract_multi_tab_data(file_path, config)
                 loaded_dfs.extend(multi_tab_dfs)
+
+            # Stacked/long format file - pivot to wide before adding
+            elif file_type == 'stacked_long':
+                inner_config = config.get('config', config)
+
+                # Read full file
+                if str(file_path).lower().endswith(('.xlsx', '.xls')):
+                    df_full = pd.read_excel(
+                        file_path,
+                        header=inner_config['start_row'],
+                        dtype=str,
+                        keep_default_na=False
+                    )
+                else:
+                    df_full = pd.read_csv(
+                        file_path,
+                        sep=inner_config['delimiter'],
+                        header=inner_config['start_row'],
+                        dtype=str,
+                        keep_default_na=False,
+                        encoding='utf-8',
+                        encoding_errors='ignore',
+                        on_bad_lines='skip'
+                    )
+
+                # Pivot stacked data to wide format
+                wide_df = pivot_stacked_to_wide(df_full, inner_config)
+
+                if wide_df is not None and not wide_df.empty:
+                    # Remove timezone if present
+                    if pd.api.types.is_datetime64tz_dtype(wide_df['Date']):
+                        wide_df['Date'] = wide_df['Date'].dt.tz_localize(None)
+
+                    # Deduplicate by Date (safe now because data is wide after pivot)
+                    wide_df = wide_df.drop_duplicates(subset=['Date'], keep='first')
+
+                    loaded_dfs.append(wide_df)
+                else:
+                    print(f"Warning: pivot_stacked_to_wide returned empty for {file_name}")
 
             # CSV or single-tab Excel file (V12: now supports multi-column)
             else:
@@ -2078,6 +2401,10 @@ def main():
                         # Update config
                         st.session_state.file_configs[file_name] = config
 
+                    elif file_type == 'stacked_long':
+                        # Stacked/long format: show pivot-specific config UI
+                        render_stacked_config_ui(file_name, file_path, config)
+
                     else:
                         # CSV/Single-tab: Render config directly (V12: now with multi-column support)
                         render_csv_config_ui(file_name, file_path, config)
@@ -2129,9 +2456,19 @@ def main():
                             date_col_name = df_sample.columns[inner_config['date_column']]
                             sample_timestamps = df_sample[date_col_name].dropna().head(2)
 
-                            for original_ts in sample_timestamps:
+                            # For stacked files with split date/time, merge columns for preview
+                            time_col_idx = inner_config.get('time_column', None)
+                            sample_times = None
+                            if time_col_idx is not None and time_col_idx >= 0 and time_col_idx < len(df_sample.columns):
+                                time_col_name = df_sample.columns[time_col_idx]
+                                sample_times = df_sample[time_col_name].dropna().head(2)
+
+                            for i, original_ts in enumerate(sample_timestamps):
                                 try:
-                                    original_str = str(original_ts)
+                                    original_str = str(original_ts).strip()
+                                    # Merge date + time if split columns
+                                    if sample_times is not None and i < len(sample_times):
+                                        original_str = original_str + ' ' + str(sample_times.iloc[i]).strip()
                                     detected_format = detect_timestamp_format(original_str)
                                     normalized = format_timestamp_mdy_hms(original_str)
 
