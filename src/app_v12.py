@@ -29,6 +29,14 @@ import io
 import base64
 from dotenv import load_dotenv
 from anthropic import Anthropic
+
+# Supabase integration – optional; app works without it if pkg not installed
+try:
+    from supabase_client import save_all_to_supabase as _save_all_to_supabase
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    _save_all_to_supabase = None
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 from pathlib import Path
@@ -79,6 +87,10 @@ if 'excel_output_path' not in st.session_state:
     st.session_state.excel_output_path = None
 if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
+if 'bbl' not in st.session_state:
+    st.session_state.bbl = ""
+if 'db_result' not in st.session_state:
+    st.session_state.db_result = None
 
 
 def add_logo():
@@ -1907,10 +1919,11 @@ def auto_process_and_export(
     uploaded_files,
     archive_path,
     building_name,
+    bbl="",
     progress_callback=None
 ):
     """
-    Orchestrate entire automatic workflow: combine -> save CSV -> resample -> save Excel.
+    Orchestrate entire automatic workflow: combine -> save CSV -> resample -> save Excel -> save to DB.
 
     V12: Now handles multi-column CSV files using the same extraction pattern as multi-tab Excel.
 
@@ -1919,11 +1932,13 @@ def auto_process_and_export(
         uploaded_files: Dictionary of {filename: filepath}
         archive_path: Archive folder path
         building_name: Building name for file naming
+        bbl: Normalised BBL string for database linking (optional; skips DB write if empty)
         progress_callback: Optional callback(phase, current, total, message)
 
     Returns:
         Tuple of (success: bool, results: dict)
-        Results dict contains: combined_df, resampled_df, raw_csv_path, excel_path, stats, inexact_cells
+        Results dict contains: combined_df, resampled_df, raw_csv_path, excel_path, stats,
+                               inexact_cells, db_result
         On error: results dict contains: error (and partial results if available)
     """
     try:
@@ -2161,16 +2176,64 @@ def auto_process_and_export(
             }
 
         if progress_callback:
-            progress_callback('export', 3, 3, "Export complete!")
+            progress_callback('export', 3, 3, "File export complete!")
 
-        # Return success with all results
+        # ===== PHASE 5: SAVE TO SUPABASE (85-100%) =====
+        # Non-fatal: DB failure must not break file export.
+        db_result = None
+        bbl_clean = bbl.strip().replace("-", "") if bbl else ""
+
+        if bbl_clean and SUPABASE_AVAILABLE and _save_all_to_supabase is not None:
+            try:
+                if progress_callback:
+                    progress_callback('db_write', 0, 4, "Connecting to Supabase…")
+
+                def _db_progress(current, total, message):
+                    if progress_callback:
+                        progress_callback('db_write', current, total, message)
+
+                db_result = _save_all_to_supabase(
+                    combined,
+                    resampled_df,
+                    inexact_cells,
+                    bbl_clean,
+                    progress_callback=_db_progress,
+                )
+
+                if progress_callback:
+                    progress_callback('db_write', 4, 4, "Database save complete!")
+
+            except Exception as db_exc:
+                db_result = {
+                    'success': False,
+                    'error': f"DB write exception: {db_exc}",
+                    'raw_result': None,
+                    'resampled_result': None,
+                }
+        elif not bbl_clean:
+            db_result = {
+                'success': False,
+                'error': "BBL not provided – database write skipped.",
+                'raw_result': None,
+                'resampled_result': None,
+            }
+        else:
+            db_result = {
+                'success': False,
+                'error': "supabase-py not installed – database write skipped.",
+                'raw_result': None,
+                'resampled_result': None,
+            }
+
+        # Return success with all results (DB result included for UI display)
         return True, {
             'combined_df': combined,
             'resampled_df': resampled_df,
             'raw_csv_path': str(raw_csv_path),
             'excel_path': str(excel_path),
             'stats': stats,
-            'inexact_cells': inexact_cells
+            'inexact_cells': inexact_cells,
+            'db_result': db_result,
         }
 
     except Exception as e:
@@ -2179,7 +2242,8 @@ def auto_process_and_export(
             # Include partial results if available
             'combined_df': combined if 'combined' in locals() else None,
             'resampled_df': resampled_df if 'resampled_df' in locals() else None,
-            'raw_csv_path': str(raw_csv_path) if 'raw_csv_path' in locals() and raw_csv_path.exists() else None
+            'raw_csv_path': str(raw_csv_path) if 'raw_csv_path' in locals() and raw_csv_path.exists() else None,
+            'db_result': None,
         }
 
 
@@ -2201,6 +2265,29 @@ def main():
         placeholder="e.g., Gotham Tower",
         help="Used for organizing archived files"
     )
+
+    # BBL Input (Borough-Block-Lot) – universal linking key for DB writes
+    # NOTE: key="bbl_input" (raw text) is distinct from st.session_state.bbl
+    # (normalised) to avoid the Streamlit "widget key conflict" error.
+    bbl_raw = st.text_input(
+        "BBL (Borough-Block-Lot)",
+        value=st.session_state.get('bbl_input', ''),
+        key="bbl_input",
+        placeholder="e.g., 1000010001  or  1-00001-0001",
+        help=(
+            "Universal building identifier used to link sensor data to "
+            "building metadata in the database. "
+            "Dashes and spaces are automatically removed before saving."
+        ),
+    )
+    # Normalise: strip whitespace, remove dashes, keep leading zeros.
+    # Stored under a separate key so we never touch the widget-owned key.
+    bbl_normalised = bbl_raw.strip().replace("-", "") if bbl_raw else ""
+    st.session_state.bbl = bbl_normalised
+    if bbl_normalised:
+        st.caption(f"🔑 Normalised BBL: `{bbl_normalised}`")
+    else:
+        st.caption("⚠️ BBL is required for database writes. File export will still work without it.")
 
     # Archive Location Selection
     st.markdown("### 📦 Archive Settings")
@@ -2493,11 +2580,12 @@ def main():
                     # Progress callback function
                     def update_progress(phase, current, total, message):
                         """Calculate and update progress bar."""
-                        # Phase weights: combine=40%, resample=40%, export=20%
+                        # Phase weights: combine=35%, resample=35%, export_files=15%, db_write=15%
                         phase_weights = {
-                            'combine': (0.0, 0.4),
-                            'resample': (0.4, 0.8),
-                            'export': (0.8, 1.0)
+                            'combine':   (0.00, 0.35),
+                            'resample':  (0.35, 0.70),
+                            'export':    (0.70, 0.85),
+                            'db_write':  (0.85, 1.00),
                         }
 
                         start, end = phase_weights.get(phase, (0.0, 1.0))
@@ -2514,7 +2602,8 @@ def main():
                             st.session_state.uploaded_files,
                             st.session_state.archive_path,
                             st.session_state.building_name,
-                            progress_callback=update_progress
+                            bbl=st.session_state.get('bbl', ''),
+                            progress_callback=update_progress,
                         )
 
                         if success:
@@ -2525,6 +2614,7 @@ def main():
                             st.session_state.inexact_cells = results['inexact_cells']
                             st.session_state.raw_csv_path = results['raw_csv_path']
                             st.session_state.excel_output_path = results['excel_path']
+                            st.session_state.db_result = results.get('db_result')
                             st.session_state.processing_complete = True
 
                             # Clear progress indicators
@@ -2550,6 +2640,31 @@ def main():
                 # AFTER PROCESSING: Show results and downloads
 
                 st.success("✅ Processing complete! Files are ready for download.")
+
+                # Database write status banner
+                db_result = st.session_state.get('db_result')
+                if db_result is not None:
+                    if db_result.get('success'):
+                        raw_r = db_result.get('raw_result') or {}
+                        res_r = db_result.get('resampled_result') or {}
+                        raw_n = raw_r.get('rows_upserted', 0)
+                        res_n = res_r.get('rows_upserted', 0)
+                        raw_err = raw_r.get('errors', [])
+                        res_err = res_r.get('errors', [])
+                        all_errors = raw_err + res_err
+                        if all_errors:
+                            st.warning(
+                                f"🗄️ Database: {raw_n:,} raw + {res_n:,} resampled rows saved "
+                                f"(with {len(all_errors)} batch error(s) — check server logs)."
+                            )
+                        else:
+                            st.success(
+                                f"🗄️ Database: {raw_n:,} raw rows → `combined_raw` · "
+                                f"{res_n:,} resampled rows → `resampled_15min`"
+                            )
+                    else:
+                        err_msg = db_result.get('error', 'Unknown error')
+                        st.warning(f"⚠️ Database write skipped or failed: {err_msg}")
 
                 # Summary metrics
                 st.markdown("### Processing Summary")
@@ -2677,6 +2792,7 @@ def main():
                     st.session_state.inexact_cells = pd.DataFrame()  # Reset to empty DataFrame
                     st.session_state.raw_csv_path = None
                     st.session_state.excel_output_path = None
+                    st.session_state.db_result = None
                     st.session_state.processing_complete = False
                     st.rerun()
 
