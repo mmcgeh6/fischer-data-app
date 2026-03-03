@@ -128,7 +128,8 @@ def melt_wide_to_long_raw(combined_df: pd.DataFrame, bbl: str) -> pd.DataFrame:
 
     Output columns: bbl, timestamp, sensor_name, reading_value, data_year
 
-    Rows where reading_value is NaN are dropped (no reading for that interval).
+    ALL rows are kept (including NaN readings) so the database mirrors
+    the full grid that appears in the exported Excel/CSV files.
     """
     sensor_cols = _sensor_columns(combined_df)
     if not sensor_cols:
@@ -144,7 +145,8 @@ def melt_wide_to_long_raw(combined_df: pd.DataFrame, bbl: str) -> pd.DataFrame:
     )
 
     long["reading_value"] = pd.to_numeric(long["reading_value"], errors="coerce")
-    long = long.dropna(subset=["reading_value"])
+    # NaN reading_value rows are KEPT — they represent intervals where the
+    # sensor had no data, matching what appears in the exported files.
 
     long["bbl"] = _normalise_bbl(bbl)
     long["timestamp"] = pd.to_datetime(long["Date"])
@@ -277,7 +279,7 @@ def melt_wide_to_long_resampled(
     # 6. Final type enforcement and cleanup
     # ------------------------------------------------------------------
     long["reading_value"] = pd.to_numeric(long["reading_value"], errors="coerce")
-    long = long.dropna(subset=["reading_value"])
+    # NaN reading_value rows are KEPT — mirrors the full resampled Excel output.
 
     long["bbl"] = _normalise_bbl(bbl)
     long["timestamp"] = pd.to_datetime(long["Date"])
@@ -299,16 +301,35 @@ def melt_wide_to_long_resampled(
 def _rows_to_json_safe(long_df: pd.DataFrame) -> list:
     """
     Convert a long DataFrame to a list of dicts ready for JSON serialisation.
-    • timestamps → ISO-8601 strings (Supabase expects this for TIMESTAMPTZ)
-    • NaN floats → None  (JSON null)
-    • bool columns kept as Python bool
+
+    JSON does not allow NaN, Infinity, or -Infinity.  pandas' ``.where(notna())``
+    misses ``inf`` and can leave behind numpy scalar types that the stdlib
+    ``json`` encoder rejects.  We therefore do a final Python-level sweep on
+    every dict to guarantee strict JSON compliance.
     """
+    import math
+
     df = long_df.copy()
     df["timestamp"] = df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
-    df["reading_value"] = df["reading_value"].where(
-        pd.notna(df["reading_value"]), other=None
-    )
-    return df.to_dict(orient="records")
+
+    # First pass: pandas-level NaN/NaT → None (fast, covers most cases)
+    df = df.where(df.notna(), other=None)
+
+    records = df.to_dict(orient="records")
+
+    # Second pass: catch inf, -inf, and any surviving NaN at the Python level
+    def _sanitise(val):
+        if val is None:
+            return None
+        if isinstance(val, float):
+            if math.isnan(val) or math.isinf(val):
+                return None
+        return val
+
+    return [
+        {k: _sanitise(v) for k, v in row.items()}
+        for row in records
+    ]
 
 
 def _upsert_batches(

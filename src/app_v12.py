@@ -1068,10 +1068,27 @@ def prepare_df_for_display(df):
 
     df_copy = df.copy()
 
-    # Convert Date column to datetime if it's object type
+    # Convert Date column to datetime if it's object type.
+    # This is a DISPLAY helper — it must never crash the app.
+    #
+    # Pandas' C-level array_to_datetime has a known crash path when
+    # timestamps contain timezone abbreviations (EDT, EST, CST …):
+    # it tries to resolve the abbreviation to a UTC timedelta, gets None
+    # back, then calls .total_seconds() on None → AttributeError.
+    # errors='coerce' doesn't help because the crash occurs before the
+    # coercion fallback.  Stripping trailing TZ abbreviations first
+    # prevents the crash; the final try/except is a safety net.
     if 'Date' in df_copy.columns:
         if df_copy['Date'].dtype == 'object':
-            df_copy['Date'] = pd.to_datetime(df_copy['Date'], errors='coerce')
+            try:
+                cleaned = (
+                    df_copy['Date']
+                    .astype(str)
+                    .str.replace(r'\s+[A-Z]{2,5}$', '', regex=True)  # strip EDT, EST, …
+                )
+                df_copy['Date'] = pd.to_datetime(cleaned, errors='coerce')
+            except Exception:
+                pass  # leave as-is — preview still renders with string dates
 
     # Convert all other object columns to numeric where possible
     for col in df_copy.columns:
